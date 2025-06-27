@@ -60,7 +60,7 @@ pub fn getAutocommit(con: Obj) !bool {
     var odbc_buf: [1024]u8 = undefined;
     odbc_buf = std.mem.zeroes(@TypeOf(odbc_buf));
     const autocommit = try env_con.con.getConnectAttr(
-        std.heap.c_allocator,
+        std.heap.smp_allocator,
         .autocommit,
         odbc_buf[0..],
     );
@@ -87,4 +87,16 @@ pub fn execute(cur_obj: Obj, query: []const u8) !void {
         result_set.deinit();
     }
     try cur.stmt.execDirect(query);
+}
+
+pub fn fetch_many(cur_obj: Obj, n_rows: usize) !Obj {
+    const cur = try StmtCapsule.read_capsule(cur_obj);
+    if (cur.result_set == null) {
+        cur.result_set = try .init(cur.stmt, std.heap.smp_allocator);
+    }
+    return @import("fetch_py.zig").fetch_py(
+        &cur.result_set.?,
+        std.heap.smp_allocator,
+        n_rows,
+    );
 }
