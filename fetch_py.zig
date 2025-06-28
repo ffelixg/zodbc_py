@@ -9,7 +9,7 @@ const CDataType = zodbc.odbc.types.CDataType;
 pub fn fetch_py(
     res: *zodbc.ResultSet,
     allocator: std.mem.Allocator,
-    n_rows: usize,
+    n_rows: ?usize,
     py_funcs: *const PyFuncs,
     comptime row_type: enum { tuple, dict, named },
     names: switch (row_type) {
@@ -29,7 +29,10 @@ pub fn fetch_py(
         cycle[it] = col.c_type;
     }
     cycle[cycle.len - 1] = .default; // dummy end
-    var rows = try std.ArrayListUnmanaged(Obj).initCapacity(allocator, n_rows);
+    var rows = try std.ArrayListUnmanaged(Obj).initCapacity(
+        allocator,
+        n_rows orelse 64,
+    );
     errdefer rows.deinit(allocator);
     errdefer for (rows.items) |row| c.Py_XDECREF(row);
     var i_col: usize = 0;
@@ -52,8 +55,10 @@ pub fn fetch_py(
         // dummy end
         .default => {
             i_row += 1;
-            if (i_row >= n_rows) {
-                break :sw;
+            if (n_rows) |n| {
+                if (i_row >= n) {
+                    break :sw;
+                }
             }
             i_col = 0;
             continue :sw .ard_type;

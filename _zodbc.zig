@@ -178,7 +178,7 @@ pub fn execute(cur_obj: Obj, query: []const u8) !void {
     try cur.stmt.execDirect(query);
 }
 
-pub fn fetch_many(cur_obj: Obj, n_rows: usize) !Obj {
+pub fn fetch_many(cur_obj: Obj, n_rows: ?usize) !Obj {
     const cur = try StmtCapsule.read_capsule(cur_obj);
     if (cur.result_set == null) {
         cur.result_set = try .init(cur.*, std.heap.smp_allocator);
@@ -216,7 +216,7 @@ pub fn fetch_dicts(cur_obj: Obj, n_rows: ?usize) !Obj {
     return fetch_py(
         &cur.result_set.?.result_set,
         std.heap.smp_allocator,
-        n_rows orelse unreachable,
+        n_rows,
         &cur.env_con.py_funcs,
         .dict,
         names,
@@ -232,7 +232,7 @@ pub fn fetch_named(cur_obj: Obj, n_rows: ?usize) !Obj {
     return fetch_py(
         &cur.result_set.?.result_set,
         std.heap.smp_allocator,
-        n_rows orelse unreachable,
+        n_rows,
         &cur.env_con.py_funcs,
         .named,
         void{},

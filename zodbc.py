@@ -57,13 +57,13 @@ class Cursor:
     def fetchmany(self, n: int) -> list[tuple]:
         return list(zip(*self.arrow_batch(n).to_pydict().values()))
 
-    def fetch_many(self, n: int) -> list[tuple]:
+    def fetch_many(self, n: int | None = None) -> list[tuple]:
         return _zodbc.fetch_many(self._cursor, n)
 
-    def fetch_dicts(self, n: int) -> list[dict[str, typing.Any]]:
+    def fetch_dicts(self, n: int | None = None) -> list[dict[str, typing.Any]]:
         return _zodbc.fetch_dicts(self._cursor, n)
 
-    def fetch_named(self, n: int) -> list[dict[str, typing.Any]]:
+    def fetch_named(self, n: int | None = None) -> list[dict[str, typing.Any]]:
         return _zodbc.fetch_named(self._cursor, n)
 
     def records(self, n: int | None = None) -> list[dict]:
