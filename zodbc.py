@@ -1,4 +1,5 @@
 import _zodbc
+import typing
 
 class Connection:
     def __init__(self, constr: str):
@@ -58,6 +59,9 @@ class Cursor:
 
     def fetch_many(self, n: int) -> list[tuple]:
         return _zodbc.fetch_many(self._cursor, n)
+
+    def fetch_dicts(self, n: int) -> list[dict[str, typing.Any]]:
+        return _zodbc.fetch_records(self._cursor, n)
 
     def records(self, n: int | None = None) -> list[dict]:
         assert n is None or n >= 0

@@ -6,12 +6,16 @@ const Obj = *c.PyObject;
 const PyFuncs = @import("PyFuncs.zig");
 
 const CDataType = zodbc.odbc.types.CDataType;
-
 pub fn fetch_py(
     res: *zodbc.ResultSet,
     allocator: std.mem.Allocator,
     n_rows: usize,
     py_funcs: *const PyFuncs,
+    comptime row_type: enum { tuple, dict },
+    names: switch (row_type) {
+        .dict => [][:0]const u8,
+        .tuple => void,
+    },
 ) !Obj {
     const cycle = try allocator.alloc(CDataType, res.n_cols + 1);
     errdefer allocator.free(cycle);
@@ -30,7 +34,12 @@ pub fn fetch_py(
             if (try res.borrowRow() == null) {
                 break :sw;
             }
-            rows.appendAssumeCapacity(c.PyTuple_New(@intCast(res.n_cols)) orelse return py.PyErr);
+            rows.appendAssumeCapacity(
+                switch (row_type) {
+                    .tuple => c.PyTuple_New(@intCast(res.n_cols)) orelse return py.PyErr,
+                    .dict => c.PyDict_New() orelse return py.PyErr,
+                },
+            );
             continue :sw cycle[i_col];
         },
         // dummy end
@@ -43,14 +52,26 @@ pub fn fetch_py(
             continue :sw .ard_type;
         },
         inline else => |c_type| {
-            _ = c.PyTuple_SetItem(
-                rows.items[i_row],
-                @intCast(i_col),
-                if (res.borrowed_row[i_col]) |bytes|
-                    try odbcToPy(bytes, c_type, py_funcs)
-                else
-                    c.Py_NewRef(c.Py_None()),
-            );
+            const py_val = if (res.borrowed_row[i_col]) |bytes|
+                try odbcToPy(bytes, c_type, py_funcs)
+            else
+                c.Py_NewRef(c.Py_None());
+            switch (row_type) {
+                .tuple => {
+                    if (c.PyTuple_SetItem(
+                        rows.items[i_row],
+                        @intCast(i_col),
+                        py_val,
+                    ) != 0) return py.PyErr;
+                },
+                .dict => {
+                    if (c.PyDict_SetItemString(
+                        rows.items[i_row],
+                        names[i_col].ptr,
+                        py_val,
+                    ) != 0) return py.PyErr;
+                },
+            }
             i_col += 1;
             continue :sw cycle[i_col];
         },
@@ -76,12 +97,7 @@ inline fn odbcToPy(
     switch (c_type) {
         .bit, .binary, .wchar => {},
         else => switch (@typeInfo(T)) {
-            // .int, .float => {
-            //     @compileLog(c_type);
-            //     return try @call(.always_inline, py.zig_to_py, .{val});
-            // },
             .int, .float => return try @call(.always_inline, py.zig_to_py, .{val}),
-            // else => try py.zig_to_py(val),
             else => {},
         },
     }

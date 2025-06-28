@@ -2,6 +2,7 @@ const std = @import("std");
 const py = @import("py");
 const zodbc = @import("zodbc");
 const PyFuncs = @import("PyFuncs.zig");
+const fetch_py = @import("fetch_py.zig").fetch_py;
 const c = py.py;
 const Obj = *c.PyObject;
 
@@ -11,15 +12,15 @@ const EnvCon = struct {
     env: zodbc.Environment,
     con: zodbc.Connection,
     py_funcs: PyFuncs,
-};
-const ConnectionCapsule = py.PyCapsule(EnvCon, "zodbc_con", &struct {
+
     fn deinit(self: *EnvCon) callconv(.c) void {
         self.con.disconnect() catch unreachable;
         self.con.deinit();
         self.env.deinit();
         self.py_funcs.deinit();
     }
-}.deinit);
+};
+const ConnectionCapsule = py.PyCapsule(EnvCon, "zodbc_con", EnvCon.deinit);
 
 const Stmt = struct {
     stmt: zodbc.Statement,
@@ -29,16 +30,52 @@ const Stmt = struct {
     /// Borrowed reference
     env_con: *const EnvCon,
     result_set: ?zodbc.ResultSet = null,
-};
-const StmtCapsule = py.PyCapsule(Stmt, "zodbc_stmt", &struct {
+    column_names: ?std.ArrayListUnmanaged([:0]const u8) = null,
+
     fn deinit(self: *Stmt) callconv(.c) void {
         if (self.result_set) |*result_set| {
             result_set.deinit();
         }
         self.stmt.deinit();
         c.Py_DECREF(self.env_con_caps);
+        if (self.column_names) |*names| {
+            for (names.items) |name| {
+                std.heap.smp_allocator.free(name);
+            }
+            names.deinit(std.heap.smp_allocator);
+        }
     }
-}.deinit);
+
+    pub fn columnNames(self: *Stmt) ![][:0]const u8 {
+        if (self.result_set == null) {
+            return error.NoResultSet;
+        }
+        if (self.column_names) |names| {
+            return names.items;
+        }
+
+        const n_cols = self.result_set.?.n_cols;
+        var names = try std.ArrayListUnmanaged([:0]const u8).initCapacity(
+            std.heap.smp_allocator,
+            n_cols,
+        );
+        errdefer names.deinit(std.heap.smp_allocator);
+        errdefer for (names.items) |name| std.heap.smp_allocator.free(name);
+
+        for (0..n_cols) |i_col| {
+            const col_name = try self.stmt.colAttributeStringZ(
+                @intCast(i_col + 1),
+                .name,
+                std.heap.smp_allocator,
+            );
+            errdefer std.heap.smp_allocator.free(col_name);
+            names.appendAssumeCapacity(col_name);
+        }
+        self.column_names = names;
+        return names.items;
+    }
+};
+const StmtCapsule = py.PyCapsule(Stmt, "zodbc_stmt", Stmt.deinit);
 
 pub fn connect(constr: []const u8) !Obj {
     const env = try zodbc.Environment.init(.v3_80);
@@ -104,10 +141,27 @@ pub fn fetch_many(cur_obj: Obj, n_rows: usize) !Obj {
     if (cur.result_set == null) {
         cur.result_set = try .init(cur.stmt, std.heap.smp_allocator);
     }
-    return @import("fetch_py.zig").fetch_py(
+    return fetch_py(
         &cur.result_set.?,
         std.heap.smp_allocator,
         n_rows,
         &cur.env_con.py_funcs,
+        .tuple,
+        void{},
+    );
+}
+
+pub fn fetch_records(cur_obj: Obj, n_rows: ?usize) !Obj {
+    const cur = try StmtCapsule.read_capsule(cur_obj);
+    if (cur.result_set == null) {
+        cur.result_set = try .init(cur.stmt, std.heap.smp_allocator);
+    }
+    return fetch_py(
+        &cur.result_set.?,
+        std.heap.smp_allocator,
+        n_rows orelse 1000,
+        &cur.env_con.py_funcs,
+        .dict,
+        try cur.columnNames(),
     );
 }
