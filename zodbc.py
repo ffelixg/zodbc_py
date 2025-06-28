@@ -61,7 +61,10 @@ class Cursor:
         return _zodbc.fetch_many(self._cursor, n)
 
     def fetch_dicts(self, n: int) -> list[dict[str, typing.Any]]:
-        return _zodbc.fetch_records(self._cursor, n)
+        return _zodbc.fetch_dicts(self._cursor, n)
+
+    def fetch_named(self, n: int) -> list[dict[str, typing.Any]]:
+        return _zodbc.fetch_named(self._cursor, n)
 
     def records(self, n: int | None = None) -> list[dict]:
         assert n is None or n >= 0

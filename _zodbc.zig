@@ -29,8 +29,85 @@ const Stmt = struct {
     env_con_caps: Obj,
     /// Borrowed reference
     env_con: *const EnvCon,
-    result_set: ?zodbc.ResultSet = null,
-    column_names: ?std.ArrayListUnmanaged([:0]const u8) = null,
+    result_set: ?struct {
+        result_set: zodbc.ResultSet,
+        cache_column_names: ?std.ArrayListUnmanaged([:0]const u8) = null,
+        cache_tuple_type: ?*c.PyTypeObject = null,
+
+        fn init(stmt: Stmt, allocator: std.mem.Allocator) !@This() {
+            return .{
+                .result_set = try .init(
+                    stmt.stmt,
+                    allocator,
+                ),
+            };
+        }
+
+        fn deinit(self: *@This()) void {
+            self.result_set.deinit();
+            if (self.cache_column_names) |*names| {
+                for (names.items) |name| {
+                    std.heap.smp_allocator.free(name);
+                }
+                names.deinit(std.heap.smp_allocator);
+            }
+            if (self.cache_tuple_type) |tp| {
+                c.Py_DECREF(@alignCast(@ptrCast(tp)));
+            }
+        }
+
+        pub fn columnNames(self: *@This()) ![][:0]const u8 {
+            if (self.cache_column_names) |names| {
+                return names.items;
+            }
+
+            const n_cols = self.result_set.n_cols;
+            var names = try std.ArrayListUnmanaged([:0]const u8).initCapacity(
+                std.heap.smp_allocator,
+                n_cols,
+            );
+            errdefer names.deinit(std.heap.smp_allocator);
+            errdefer for (names.items) |name| std.heap.smp_allocator.free(name);
+
+            for (0..n_cols) |i_col| {
+                const col_name = try self.result_set.stmt.colAttributeStringZ(
+                    @intCast(i_col + 1),
+                    .name,
+                    std.heap.smp_allocator,
+                );
+                errdefer std.heap.smp_allocator.free(col_name);
+                names.appendAssumeCapacity(col_name);
+            }
+            self.cache_column_names = names;
+            return names.items;
+        }
+
+        pub fn tupleType(self: *@This()) !*c.PyTypeObject {
+            if (self.cache_tuple_type) |tp| {
+                return tp;
+            }
+            const names = try self.columnNames();
+            const fields = try std.heap.smp_allocator.alloc(c.PyStructSequence_Field, names.len + 1);
+            defer std.heap.smp_allocator.free(fields);
+            fields[fields.len - 1] = c.PyStructSequence_Field{ .doc = null, .name = null };
+            for (names, 0..) |name, i_name| {
+                fields[i_name] = .{
+                    .doc = null,
+                    .name = name.ptr,
+                };
+            }
+
+            var desc: c.PyStructSequence_Desc = .{
+                .doc = "Rows from a zodbc query",
+                .n_in_sequence = @intCast(fields.len - 1),
+                .name = "zodbc.Row",
+                .fields = fields.ptr,
+            };
+            const tp = c.PyStructSequence_NewType(&desc) orelse return PyErr;
+            self.cache_tuple_type = tp;
+            return tp;
+        }
+    } = null,
 
     fn deinit(self: *Stmt) callconv(.c) void {
         if (self.result_set) |*result_set| {
@@ -38,41 +115,6 @@ const Stmt = struct {
         }
         self.stmt.deinit();
         c.Py_DECREF(self.env_con_caps);
-        if (self.column_names) |*names| {
-            for (names.items) |name| {
-                std.heap.smp_allocator.free(name);
-            }
-            names.deinit(std.heap.smp_allocator);
-        }
-    }
-
-    pub fn columnNames(self: *Stmt) ![][:0]const u8 {
-        if (self.result_set == null) {
-            return error.NoResultSet;
-        }
-        if (self.column_names) |names| {
-            return names.items;
-        }
-
-        const n_cols = self.result_set.?.n_cols;
-        var names = try std.ArrayListUnmanaged([:0]const u8).initCapacity(
-            std.heap.smp_allocator,
-            n_cols,
-        );
-        errdefer names.deinit(std.heap.smp_allocator);
-        errdefer for (names.items) |name| std.heap.smp_allocator.free(name);
-
-        for (0..n_cols) |i_col| {
-            const col_name = try self.stmt.colAttributeStringZ(
-                @intCast(i_col + 1),
-                .name,
-                std.heap.smp_allocator,
-            );
-            errdefer std.heap.smp_allocator.free(col_name);
-            names.appendAssumeCapacity(col_name);
-        }
-        self.column_names = names;
-        return names.items;
     }
 };
 const StmtCapsule = py.PyCapsule(Stmt, "zodbc_stmt", Stmt.deinit);
@@ -139,29 +181,61 @@ pub fn execute(cur_obj: Obj, query: []const u8) !void {
 pub fn fetch_many(cur_obj: Obj, n_rows: usize) !Obj {
     const cur = try StmtCapsule.read_capsule(cur_obj);
     if (cur.result_set == null) {
-        cur.result_set = try .init(cur.stmt, std.heap.smp_allocator);
+        cur.result_set = try .init(cur.*, std.heap.smp_allocator);
     }
     return fetch_py(
-        &cur.result_set.?,
+        &cur.result_set.?.result_set,
         std.heap.smp_allocator,
         n_rows,
         &cur.env_con.py_funcs,
         .tuple,
         void{},
+        void{},
     );
 }
 
-pub fn fetch_records(cur_obj: Obj, n_rows: ?usize) !Obj {
+pub fn fetch_dicts(cur_obj: Obj, n_rows: ?usize) !Obj {
     const cur = try StmtCapsule.read_capsule(cur_obj);
     if (cur.result_set == null) {
-        cur.result_set = try .init(cur.stmt, std.heap.smp_allocator);
+        cur.result_set = try .init(cur.*, std.heap.smp_allocator);
     }
+
+    const names = try cur.result_set.?.columnNames();
+    for (names[0 .. names.len - 1], 0..) |name, i_name| {
+        for (names[i_name + 1 ..], 0..) |name2, i_name2| {
+            if (std.mem.eql(u8, name, name2)) {
+                return py.raise(
+                    .ValueError,
+                    "Column name '{s}' appears twice at positions {} and {}",
+                    .{ name, i_name, i_name2 },
+                );
+            }
+        }
+    }
+
     return fetch_py(
-        &cur.result_set.?,
+        &cur.result_set.?.result_set,
         std.heap.smp_allocator,
-        n_rows orelse 1000,
+        n_rows orelse unreachable,
         &cur.env_con.py_funcs,
         .dict,
-        try cur.columnNames(),
+        names,
+        void{},
+    );
+}
+
+pub fn fetch_named(cur_obj: Obj, n_rows: ?usize) !Obj {
+    const cur = try StmtCapsule.read_capsule(cur_obj);
+    if (cur.result_set == null) {
+        cur.result_set = try .init(cur.*, std.heap.smp_allocator);
+    }
+    return fetch_py(
+        &cur.result_set.?.result_set,
+        std.heap.smp_allocator,
+        n_rows orelse unreachable,
+        &cur.env_con.py_funcs,
+        .named,
+        void{},
+        try cur.result_set.?.tupleType(),
     );
 }

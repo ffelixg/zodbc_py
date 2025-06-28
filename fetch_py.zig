@@ -11,10 +11,16 @@ pub fn fetch_py(
     allocator: std.mem.Allocator,
     n_rows: usize,
     py_funcs: *const PyFuncs,
-    comptime row_type: enum { tuple, dict },
+    comptime row_type: enum { tuple, dict, named },
     names: switch (row_type) {
         .dict => [][:0]const u8,
         .tuple => void,
+        .named => void,
+    },
+    named_tuple_type: switch (row_type) {
+        .dict => void,
+        .tuple => void,
+        .named => *c.PyTypeObject,
     },
 ) !Obj {
     const cycle = try allocator.alloc(CDataType, res.n_cols + 1);
@@ -38,6 +44,7 @@ pub fn fetch_py(
                 switch (row_type) {
                     .tuple => c.PyTuple_New(@intCast(res.n_cols)) orelse return py.PyErr,
                     .dict => c.PyDict_New() orelse return py.PyErr,
+                    .named => c.PyStructSequence_New(named_tuple_type) orelse return py.PyErr,
                 },
             );
             continue :sw cycle[i_col];
@@ -70,6 +77,13 @@ pub fn fetch_py(
                         names[i_col].ptr,
                         py_val,
                     ) != 0) return py.PyErr;
+                },
+                .named => {
+                    c.PyStructSequence_SetItem(
+                        rows.items[i_row],
+                        @intCast(i_col),
+                        py_val,
+                    );
                 },
             }
             i_col += 1;
