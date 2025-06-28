@@ -3,6 +3,7 @@ const py = @import("py");
 const zodbc = @import("zodbc");
 const c = py.py;
 const Obj = *c.PyObject;
+const PyFuncs = @import("PyFuncs.zig");
 
 const CDataType = zodbc.odbc.types.CDataType;
 
@@ -10,6 +11,7 @@ pub fn fetch_py(
     res: *zodbc.ResultSet,
     allocator: std.mem.Allocator,
     n_rows: usize,
+    py_funcs: *const PyFuncs,
 ) !Obj {
     const cycle = try allocator.alloc(CDataType, res.n_cols + 1);
     errdefer allocator.free(cycle);
@@ -41,18 +43,14 @@ pub fn fetch_py(
             continue :sw .ard_type;
         },
         inline else => |c_type| {
-            const T = if (c_type.MaybeType()) |t| t else @panic("c_type not implemented: " ++ @tagName(c_type));
-            const cell = res.borrowed_row[i_col] orelse {
-                c.Py_INCREF(c.Py_None());
-                _ = c.PyTuple_SetItem(rows.items[i_row], @intCast(i_col), c.Py_None());
-                i_col += 1;
-                continue :sw cycle[i_col];
-            };
-            const py_val = switch (@typeInfo(T)) {
-                .int, .float => try py.zig_to_py(c_type.asTypeValue(cell)),
-                else => try py.zig_to_py(c_type.asTypeValue(cell)),
-            };
-            _ = c.PyTuple_SetItem(rows.items[i_row], @intCast(i_col), py_val);
+            _ = c.PyTuple_SetItem(
+                rows.items[i_row],
+                @intCast(i_col),
+                if (res.borrowed_row[i_col]) |bytes|
+                    try odbcToPy(bytes, c_type, py_funcs)
+                else
+                    c.Py_NewRef(c.Py_None()),
+            );
             i_col += 1;
             continue :sw cycle[i_col];
         },
@@ -65,4 +63,141 @@ pub fn fetch_py(
             return py.PyErr;
     }
     return py_ret;
+}
+
+inline fn odbcToPy(
+    bytes: []u8,
+    comptime c_type: CDataType,
+    py_funcs: *const PyFuncs,
+) !Obj {
+    const T = if (c_type.MaybeType()) |t| t else @panic("c_type not implemented: " ++ @tagName(c_type));
+    const val = c_type.asTypeValue(bytes);
+
+    switch (c_type) {
+        .bit, .binary, .wchar => {},
+        else => switch (@typeInfo(T)) {
+            // .int, .float => {
+            //     @compileLog(c_type);
+            //     return try @call(.always_inline, py.zig_to_py, .{val});
+            // },
+            .int, .float => return try @call(.always_inline, py.zig_to_py, .{val}),
+            // else => try py.zig_to_py(val),
+            else => {},
+        },
+    }
+
+    switch (c_type) {
+        .wchar => {
+            const str = try std.unicode.wtf16LeToWtf8Alloc(
+                std.heap.smp_allocator,
+                // @as([]u16, @alignCast(@ptrCast(bytes))),
+                c_type.asType(bytes),
+            );
+            defer std.heap.smp_allocator.free(str);
+            return c.PyUnicode_FromStringAndSize(str.ptr, @intCast(str.len)) orelse return py.PyErr;
+        },
+        .binary => {
+            return c.PyBytes_FromStringAndSize(bytes.ptr, @intCast(bytes.len)) orelse return py.PyErr;
+        },
+        .type_date => {
+            return try pyCall(py_funcs.cls_date, .{ val.year, val.month, val.day });
+        },
+        .ss_time2 => {
+            return try pyCall(py_funcs.cls_time, .{ val.hour, val.minute, val.second, @divTrunc(val.fraction, 1000) });
+        },
+        .type_time => {
+            return try pyCall(py_funcs.cls_time, .{ val.hour, val.minute, val.second });
+        },
+        .ss_timestampoffset => {
+            const td = try pyCall(py_funcs.cls_timedelta, .{
+                0,
+                @as(i32, val.timezone_hour) * 3600 + @as(i32, val.timezone_minute) * 60,
+            });
+            const tz = try pyCall(py_funcs.cls_timezone, .{td});
+            return try pyCall(py_funcs.cls_time, .{ val.hour, val.minute, val.second, @divTrunc(val.fraction, 1000), tz });
+        },
+        .type_timestamp => {
+            return try pyCall(py_funcs.cls_datetime, .{ val.year, val.month, val.day, val.hour, val.minute, val.second, @divTrunc(val.fraction, 1000) });
+        },
+        .guid => {
+            const asbytes: [16]u8 = @bitCast(val);
+            const pybytes: Obj = c.PyBytes_FromStringAndSize(
+                &asbytes,
+                asbytes.len,
+            ) orelse return py.PyErr;
+            return try pyCall(py_funcs.cls_uuid, .{ null, null, pybytes });
+        },
+        .numeric => {
+            _, const dec_str = try decToString(val);
+            return try pyCall(py_funcs.cls_decimal, .{dec_str});
+        },
+        .bit => {
+            return try py.zig_to_py(switch (val) {
+                1 => true,
+                0 => false,
+                else => unreachable,
+            });
+        },
+        // else => return try py.zig_to_py(val),
+        else => @compileError("missing conversion for CDataType: " ++ @tagName(c_type)),
+    }
+    comptime unreachable;
+}
+
+inline fn pyCall(func: Obj, args: anytype) !Obj {
+    // without limited api, PyObject_Vectorcall would give better performance
+    const py_args = try @call(
+        .always_inline,
+        py.zig_to_py,
+        .{args},
+    );
+    defer c.Py_DECREF(py_args);
+    return c.PyObject_Call(
+        func,
+        py_args,
+        null,
+    ) orelse return py.PyErr;
+}
+
+const DEC_BUF_LEN = 2 * (2 + std.math.log10(std.math.maxInt(u128)));
+fn decToString(dec: zodbc.c.SQL_NUMERIC_STRUCT) !struct { [DEC_BUF_LEN]u8, []const u8 } {
+    const middle: comptime_int = @divExact(DEC_BUF_LEN, 2);
+    var buf: [DEC_BUF_LEN]u8 = undefined;
+    var buf_slice: []u8 = @constCast(buf[0..]);
+    const printed = try std.fmt.bufPrint(
+        buf_slice[middle..],
+        "{}",
+        .{@as(u128, @bitCast(dec.val))},
+    );
+
+    var start: u8 = middle;
+    var end: u8 = middle + @as(u8, @intCast(printed.len));
+
+    const scale: u8 = @intCast(dec.scale);
+    if (scale == 0) {} else if (scale < printed.len) {
+        for (0..scale) |i| {
+            buf[end - i] = buf[end - i - 1];
+        }
+        buf[end - scale] = '.';
+        end += 1;
+    } else {
+        const diff = scale - @as(u8, @intCast(printed.len));
+        for (0..diff) |i| {
+            buf[start - 1 - i] = '0';
+        }
+        buf[start - 1 - diff] = '.';
+        buf[start - 2 - diff] = '0';
+        start -= diff + 2;
+    }
+
+    switch (dec.sign) {
+        1 => {},
+        0 => {
+            buf[start - 1] = '-';
+            start -= 1;
+        },
+        else => unreachable,
+    }
+
+    return .{ buf, buf[start..end] };
 }

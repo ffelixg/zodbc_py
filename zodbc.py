@@ -1,6 +1,3 @@
-from import_zig import *
-compile_prepared('.', '_zodbc', '.')
-
 import _zodbc
 
 class Connection:
@@ -68,45 +65,3 @@ class Cursor:
             return self.arrow().to_pylist()
         else:
             return self.arrow_batch(n).to_pylist()
-
-
-if __name__ == "__main__":
-    import os
-
-    con = connect(os.environ["ODBC_CONSTR"])
-    print(con.autocommit)
-    con.autocommit = False
-    print(con.autocommit)
-    con.autocommit = True
-    print(con.autocommit)
-    con.autocommit = False
-    print(con.autocommit)
-    con.autocommit = True
-    print(con.autocommit)
-
-    cur = con.cursor()
-    cur.execute("drop table if exists testping")
-    # cur.execute("create table testping(id int, name varchar(255))")
-    # cur.execute("insert into testping values(1, 'test')")
-    cur.execute("create table testping(id int, name varchar(255), dec decimal(4, 2))")
-    cur.execute("insert into testping values(1, 'test', 1.23)")
-    # cur.execute("select * from testping")
-    cur.execute("select top 1 * from test")
-    # cur.execute("select top 999 row_number() over(order by (select null)) a, testping.* from testping cross join sys.objects")
-    # cur.execute("select * from sys.objects")
-
-    import gc
-
-    print(cur.fetch_many(2))
-    # gc.disable()
-    # print(cur.arrow_batch(1))
-    # print(cur.arrow_batch(0))
-    # print(cur.fetchmany(3))
-    # print(cur.fetchmany(2))
-    # print(cur.arrow_batch(2))
-    # print(cur.arrow())
-    # print(cur.records())
-    
-    # cur = con.cursor()
-    # cur.execute("select * from test")
-    # print(cur.arrow())

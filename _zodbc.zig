@@ -1,6 +1,7 @@
 const std = @import("std");
 const py = @import("py");
 const zodbc = @import("zodbc");
+const PyFuncs = @import("PyFuncs.zig");
 const c = py.py;
 const Obj = *c.PyObject;
 
@@ -9,12 +10,14 @@ const PyErr = py.PyErr;
 const EnvCon = struct {
     env: zodbc.Environment,
     con: zodbc.Connection,
+    py_funcs: PyFuncs,
 };
-const ConnectionCapsule = py.PyCapsule(EnvCon, "arrow_array", &struct {
+const ConnectionCapsule = py.PyCapsule(EnvCon, "zodbc_con", &struct {
     fn deinit(self: *EnvCon) callconv(.c) void {
         self.con.disconnect() catch unreachable;
         self.con.deinit();
         self.env.deinit();
+        self.py_funcs.deinit();
     }
 }.deinit);
 
@@ -23,9 +26,11 @@ const Stmt = struct {
     /// Keep a reference to the connection capsule so it isn't
     /// accidentally garbage collected before all its statements
     env_con_caps: Obj,
+    /// Borrowed reference
+    env_con: *const EnvCon,
     result_set: ?zodbc.ResultSet = null,
 };
-const StmtCapsule = py.PyCapsule(Stmt, "arrow_array", &struct {
+const StmtCapsule = py.PyCapsule(Stmt, "zodbc_stmt", &struct {
     fn deinit(self: *Stmt) callconv(.c) void {
         if (self.result_set) |*result_set| {
             result_set.deinit();
@@ -44,9 +49,13 @@ pub fn connect(constr: []const u8) !Obj {
     try con.connectWithString(constr);
     errdefer con.disconnect() catch unreachable;
 
+    const py_funcs = try PyFuncs.init();
+    errdefer py_funcs.deinit();
+
     return try ConnectionCapsule.create_capsule(EnvCon{
         .env = env,
         .con = con,
+        .py_funcs = py_funcs,
     });
 }
 
@@ -77,6 +86,7 @@ pub fn cursor(con: Obj) !Obj {
     return try StmtCapsule.create_capsule(.{
         .stmt = stmt,
         .env_con_caps = c.Py_NewRef(con),
+        .env_con = env_con,
     });
 }
 
@@ -98,5 +108,6 @@ pub fn fetch_many(cur_obj: Obj, n_rows: usize) !Obj {
         &cur.result_set.?,
         std.heap.smp_allocator,
         n_rows,
+        &cur.env_con.py_funcs,
     );
 }

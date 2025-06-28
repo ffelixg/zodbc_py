@@ -3,3 +3,4 @@ zig-out
 build.zig
 build.zig.zon
 *.so
+*.zip
