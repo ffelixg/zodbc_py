@@ -1,5 +1,11 @@
 import _zodbc
 import typing
+from enum import IntEnum
+
+class Datetime2_7_Fetch(IntEnum):
+    micro = 1
+    string = 2
+    nano = 3
 
 class Connection:
     def __init__(self, constr: str):
@@ -13,11 +19,11 @@ class Connection:
     def autocommit(self, value: bool):
         _zodbc.setAutocommit(self._con, value)
 
-    def cursor(self) -> "Cursor":
+    def cursor(self, datetime2_7_fetch: Datetime2_7_Fetch) -> "Cursor":
         """
         Create a new cursor object.
         """
-        return Cursor(self)
+        return Cursor(self, datetime2_7_fetch)
 
 def connect(constr: str) -> Connection:
     """
@@ -26,9 +32,9 @@ def connect(constr: str) -> Connection:
     return Connection(constr)
 
 class Cursor:
-    def __init__(self, con: Connection):
+    def __init__(self, con: Connection, datetime2_7_fetch: Datetime2_7_Fetch):
         self._con = con
-        self._cursor = _zodbc.cursor(con._con)
+        self._cursor = _zodbc.cursor(con._con, datetime2_7_fetch)
 
     def execute(self, query: str):
         """

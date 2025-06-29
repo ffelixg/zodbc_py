@@ -4,9 +4,102 @@ const zodbc = @import("zodbc");
 const c = py.py;
 const Obj = *c.PyObject;
 const PyFuncs = @import("PyFuncs.zig");
+const fmt = @import("fmt.zig");
 
 const CDataType = zodbc.odbc.types.CDataType;
+
+const Conversions = union(enum) {
+    // char: CDataType.char.Type(),
+    begin_row: void,
+    end_row: void,
+
+    wchar: CDataType.wchar.Type(),
+    sshort: CDataType.sshort.Type(),
+    ushort: CDataType.ushort.Type(),
+    slong: CDataType.slong.Type(),
+    ulong: CDataType.ulong.Type(),
+    float: CDataType.float.Type(),
+    double: CDataType.double.Type(),
+    bit: CDataType.bit.Type(),
+    stinyint: CDataType.stinyint.Type(),
+    utinyint: CDataType.utinyint.Type(),
+    sbigint: CDataType.sbigint.Type(),
+    ubigint: CDataType.ubigint.Type(),
+    binary: CDataType.binary.Type(),
+    numeric: CDataType.numeric.Type(),
+    guid: CDataType.guid.Type(),
+    type_date: CDataType.type_date.Type(),
+    type_time: CDataType.type_time.Type(),
+    type_timestamp_micro: CDataType.type_timestamp.Type(),
+    type_timestamp_string: CDataType.type_timestamp.Type(),
+    ss_time2_micro: CDataType.ss_time2.Type(),
+    ss_time2_string: CDataType.ss_time2.Type(),
+    ss_timestampoffset_micro: CDataType.ss_timestampoffset.Type(),
+    ss_timestampoffset_string: CDataType.ss_timestampoffset.Type(),
+
+    const Tags = @typeInfo(@This()).@"union".tag_type.?;
+
+    fn Type(tag: Tags) type {
+        return @FieldType(@This(), @tagName(tag));
+    }
+
+    fn asTypeValue(comptime tag: Tags, data: []u8) Type(tag) {
+        return std.mem.bytesToValue(Type(tag), data);
+    }
+};
+
+cycle: []Conversions.Tags,
+
+pub const Dt7Fetch = enum(u15) { micro = 1, string = 2, nano = 3 };
+
+pub fn init(res: *zodbc.ResultSet, allocator: std.mem.Allocator, dt7_fetch: Dt7Fetch) !@This() {
+    const cycle = try allocator.alloc(Conversions.Tags, res.n_cols + 1);
+    errdefer allocator.free(cycle);
+    for (res.columns.items, 0..) |col, it| {
+        cycle[it] = switch (col.c_type) {
+            inline .type_timestamp, .ss_time2, .ss_timestampoffset => |c_type| blk: {
+                switch (dt7_fetch) {
+                    inline .micro, .nano => {
+                        const tag = comptime std.enums.nameCast(Conversions.Tags, @tagName(c_type) ++ "_micro");
+                        comptime std.debug.assert(c_type.Type() == Conversions.Type(tag));
+                        break :blk tag;
+                    },
+                    inline .string => {
+                        const prec = try res.stmt.colAttribute(@intCast(it + 1), .precision);
+                        if (prec <= 6) {
+                            const tag = comptime std.enums.nameCast(Conversions.Tags, @tagName(c_type) ++ "_micro");
+                            comptime std.debug.assert(c_type.Type() == Conversions.Type(tag));
+                            break :blk tag;
+                        } else {
+                            const tag = comptime std.enums.nameCast(Conversions.Tags, @tagName(c_type) ++ "_string");
+                            comptime std.debug.assert(c_type.Type() == Conversions.Type(tag));
+                            break :blk tag;
+                        }
+                    },
+                }
+            },
+            inline else => |c_type| blk: {
+                @setEvalBranchQuota(0xFFFF_FFFF);
+                const tag: ?Conversions.Tags = comptime for (std.enums.values(Conversions.Tags)) |tag| {
+                    if (std.mem.eql(u8, @tagName(tag), @tagName(c_type))) {
+                        std.debug.assert(c_type.Type() == Conversions.Type(tag));
+                        break tag;
+                    }
+                } else null;
+                break :blk tag orelse return error.ConversionNotImplemented;
+            },
+        };
+    }
+    cycle[cycle.len - 1] = .end_row;
+    return .{ .cycle = cycle };
+}
+
+pub fn deinit(self: *const @This(), allocator: std.mem.Allocator) void {
+    allocator.free(self.cycle);
+}
+
 pub fn fetch_py(
+    self: *const @This(),
     res: *zodbc.ResultSet,
     allocator: std.mem.Allocator,
     n_rows: ?usize,
@@ -23,12 +116,6 @@ pub fn fetch_py(
         .named => *c.PyTypeObject,
     },
 ) !Obj {
-    const cycle = try allocator.alloc(CDataType, res.n_cols + 1);
-    errdefer allocator.free(cycle);
-    for (res.columns.items, 0..) |col, it| {
-        cycle[it] = col.c_type;
-    }
-    cycle[cycle.len - 1] = .default; // dummy end
     var rows = try std.ArrayListUnmanaged(Obj).initCapacity(
         allocator,
         n_rows orelse 64,
@@ -37,9 +124,8 @@ pub fn fetch_py(
     errdefer for (rows.items) |row| c.Py_XDECREF(row);
     var i_col: usize = 0;
     var i_row: usize = 0;
-    sw: switch (CDataType.ard_type) {
-        // dummy start
-        .ard_type => {
+    sw: switch (Conversions.Tags.begin_row) {
+        .begin_row => {
             if (try res.borrowRow() == null) {
                 break :sw;
             }
@@ -50,10 +136,10 @@ pub fn fetch_py(
                     .named => c.PyStructSequence_New(named_tuple_type) orelse return py.PyErr,
                 },
             );
-            continue :sw cycle[i_col];
+            std.debug.assert(i_col == 0);
+            continue :sw self.cycle[0];
         },
-        // dummy end
-        .default => {
+        .end_row => {
             i_row += 1;
             if (n_rows) |n| {
                 if (i_row >= n) {
@@ -61,11 +147,11 @@ pub fn fetch_py(
                 }
             }
             i_col = 0;
-            continue :sw .ard_type;
+            continue :sw .begin_row;
         },
-        inline else => |c_type| {
+        inline else => |conv| {
             const py_val = if (res.borrowed_row[i_col]) |bytes|
-                try odbcToPy(bytes, c_type, py_funcs)
+                try odbcToPy(bytes, conv, py_funcs)
             else
                 c.Py_NewRef(c.Py_None());
             switch (row_type) {
@@ -92,7 +178,7 @@ pub fn fetch_py(
                 },
             }
             i_col += 1;
-            continue :sw cycle[i_col];
+            continue :sw self.cycle[i_col];
         },
     }
 
@@ -107,26 +193,24 @@ pub fn fetch_py(
 
 inline fn odbcToPy(
     bytes: []u8,
-    comptime c_type: CDataType,
+    comptime conv: Conversions.Tags,
     py_funcs: *const PyFuncs,
 ) !Obj {
-    const T = if (c_type.MaybeType()) |t| t else @panic("c_type not implemented: " ++ @tagName(c_type));
-    const val = c_type.asTypeValue(bytes);
+    const val = Conversions.asTypeValue(conv, bytes);
 
-    switch (c_type) {
+    switch (conv) {
         .bit, .binary, .wchar => {},
-        else => switch (@typeInfo(T)) {
+        else => switch (@typeInfo(Conversions.Type(conv))) {
             .int, .float => return try @call(.always_inline, py.zig_to_py, .{val}),
             else => {},
         },
     }
 
-    switch (c_type) {
+    switch (conv) {
         .wchar => {
             const str = try std.unicode.wtf16LeToWtf8Alloc(
                 std.heap.smp_allocator,
-                // @as([]u16, @alignCast(@ptrCast(bytes))),
-                c_type.asType(bytes),
+                @as([]u16, @alignCast(@ptrCast(bytes))),
             );
             defer std.heap.smp_allocator.free(str);
             return c.PyUnicode_FromStringAndSize(str.ptr, @intCast(str.len)) orelse return py.PyErr;
@@ -137,13 +221,20 @@ inline fn odbcToPy(
         .type_date => {
             return try pyCall(py_funcs.cls_date, .{ val.year, val.month, val.day });
         },
-        .ss_time2 => {
-            return try pyCall(py_funcs.cls_time, .{ val.hour, val.minute, val.second, @divTrunc(val.fraction, 1000) });
-        },
         .type_time => {
             return try pyCall(py_funcs.cls_time, .{ val.hour, val.minute, val.second });
         },
-        .ss_timestampoffset => {
+        .ss_time2_micro => {
+            return try pyCall(py_funcs.cls_time, .{ val.hour, val.minute, val.second, @divTrunc(val.fraction, 1000) });
+        },
+        .ss_time2_string => {
+            const time_str = fmt.timeToString(.ns, @intCast(val.hour), @intCast(val.minute), @intCast(val.second), @intCast(val.fraction));
+            return c.PyUnicode_FromStringAndSize(
+                time_str ++ "",
+                time_str.len,
+            ) orelse py.PyErr;
+        },
+        .ss_timestampoffset_micro => {
             const td = try pyCall(py_funcs.cls_timedelta, .{
                 0,
                 @as(i32, val.timezone_hour) * 3600 + @as(i32, val.timezone_minute) * 60,
@@ -151,8 +242,16 @@ inline fn odbcToPy(
             const tz = try pyCall(py_funcs.cls_timezone, .{td});
             return try pyCall(py_funcs.cls_time, .{ val.hour, val.minute, val.second, @divTrunc(val.fraction, 1000), tz });
         },
-        .type_timestamp => {
+        .type_timestamp_micro => {
             return try pyCall(py_funcs.cls_datetime, .{ val.year, val.month, val.day, val.hour, val.minute, val.second, @divTrunc(val.fraction, 1000) });
+        },
+        .type_timestamp_string => {
+            const dt_str = fmt.dateToString(@intCast(val.year), @intCast(val.month), @intCast(val.day));
+            const time_str = fmt.timeToString(.ns, @intCast(val.hour), @intCast(val.minute), @intCast(val.second), @intCast(val.fraction));
+            return c.PyUnicode_FromStringAndSize(
+                dt_str ++ "T" ++ time_str,
+                dt_str.len + 1 + time_str.len,
+            ) orelse py.PyErr;
         },
         .guid => {
             const asbytes: [16]u8 = @bitCast(val);
@@ -163,7 +262,7 @@ inline fn odbcToPy(
             return try pyCall(py_funcs.cls_uuid, .{ null, null, pybytes });
         },
         .numeric => {
-            _, const dec_str = try decToString(val);
+            _, const dec_str = try fmt.decToString(val);
             return try pyCall(py_funcs.cls_decimal, .{dec_str});
         },
         .bit => {
@@ -173,8 +272,8 @@ inline fn odbcToPy(
                 else => unreachable,
             });
         },
-        // else => return try py.zig_to_py(val),
-        else => @compileError("missing conversion for CDataType: " ++ @tagName(c_type)),
+        else => return try py.zig_to_py(val),
+        // else => @compileError("missing conversion for Conversion.Tag: " ++ @tagName(conv)),
     }
     comptime unreachable;
 }
@@ -192,47 +291,4 @@ inline fn pyCall(func: Obj, args: anytype) !Obj {
         py_args,
         null,
     ) orelse return py.PyErr;
-}
-
-const DEC_BUF_LEN = 2 * (2 + std.math.log10(std.math.maxInt(u128)));
-fn decToString(dec: zodbc.c.SQL_NUMERIC_STRUCT) !struct { [DEC_BUF_LEN]u8, []const u8 } {
-    const middle: comptime_int = @divExact(DEC_BUF_LEN, 2);
-    var buf: [DEC_BUF_LEN]u8 = undefined;
-    var buf_slice: []u8 = @constCast(buf[0..]);
-    const printed = try std.fmt.bufPrint(
-        buf_slice[middle..],
-        "{}",
-        .{@as(u128, @bitCast(dec.val))},
-    );
-
-    var start: u8 = middle;
-    var end: u8 = middle + @as(u8, @intCast(printed.len));
-
-    const scale: u8 = @intCast(dec.scale);
-    if (scale == 0) {} else if (scale < printed.len) {
-        for (0..scale) |i| {
-            buf[end - i] = buf[end - i - 1];
-        }
-        buf[end - scale] = '.';
-        end += 1;
-    } else {
-        const diff = scale - @as(u8, @intCast(printed.len));
-        for (0..diff) |i| {
-            buf[start - 1 - i] = '0';
-        }
-        buf[start - 1 - diff] = '.';
-        buf[start - 2 - diff] = '0';
-        start -= diff + 2;
-    }
-
-    switch (dec.sign) {
-        1 => {},
-        0 => {
-            buf[start - 1] = '-';
-            start -= 1;
-        },
-        else => unreachable,
-    }
-
-    return .{ buf, buf[start..end] };
 }

@@ -2,7 +2,8 @@ const std = @import("std");
 const py = @import("py");
 const zodbc = @import("zodbc");
 const PyFuncs = @import("PyFuncs.zig");
-const fetch_py = @import("fetch_py.zig").fetch_py;
+const FetchPy = @import("fetch_py.zig");
+const fetch_py = FetchPy.fetch_py;
 const c = py.py;
 const Obj = *c.PyObject;
 
@@ -29,10 +30,13 @@ const Stmt = struct {
     env_con_caps: Obj,
     /// Borrowed reference
     env_con: *const EnvCon,
+    dt7_fetch: FetchPy.Dt7Fetch,
     result_set: ?struct {
         result_set: zodbc.ResultSet,
+        dt7_fetch: FetchPy.Dt7Fetch,
         cache_column_names: ?std.ArrayListUnmanaged([:0]const u8) = null,
         cache_tuple_type: ?*c.PyTypeObject = null,
+        cache_fetch_py_state: ?FetchPy = null,
 
         fn init(stmt: Stmt, allocator: std.mem.Allocator) !@This() {
             return .{
@@ -40,6 +44,7 @@ const Stmt = struct {
                     stmt.stmt,
                     allocator,
                 ),
+                .dt7_fetch = stmt.dt7_fetch,
             };
         }
 
@@ -53,6 +58,9 @@ const Stmt = struct {
             }
             if (self.cache_tuple_type) |tp| {
                 c.Py_DECREF(@alignCast(@ptrCast(tp)));
+            }
+            if (self.cache_fetch_py_state) |fp| {
+                fp.deinit(std.heap.smp_allocator);
             }
         }
 
@@ -107,6 +115,19 @@ const Stmt = struct {
             self.cache_tuple_type = tp;
             return tp;
         }
+
+        pub fn fetchPyState(self: *@This()) !FetchPy {
+            if (self.cache_fetch_py_state) |fp| {
+                return fp;
+            }
+            const fp = try FetchPy.init(
+                &self.result_set,
+                std.heap.smp_allocator,
+                self.dt7_fetch,
+            );
+            self.cache_fetch_py_state = fp;
+            return fp;
+        }
     } = null,
 
     fn deinit(self: *Stmt) callconv(.c) void {
@@ -158,7 +179,7 @@ pub fn getAutocommit(con: Obj) !bool {
     };
 }
 
-pub fn cursor(con: Obj) !Obj {
+pub fn cursor(con: Obj, datetime2_7_fetch: FetchPy.Dt7Fetch) !Obj {
     const env_con = try ConnectionCapsule.read_capsule(con);
     const stmt = try zodbc.Statement.init(env_con.con);
     errdefer stmt.deinit();
@@ -166,6 +187,7 @@ pub fn cursor(con: Obj) !Obj {
         .stmt = stmt,
         .env_con_caps = c.Py_NewRef(con),
         .env_con = env_con,
+        .dt7_fetch = datetime2_7_fetch,
     });
 }
 
@@ -184,6 +206,7 @@ pub fn fetch_many(cur_obj: Obj, n_rows: ?usize) !Obj {
         cur.result_set = try .init(cur.*, std.heap.smp_allocator);
     }
     return fetch_py(
+        &try cur.result_set.?.fetchPyState(),
         &cur.result_set.?.result_set,
         std.heap.smp_allocator,
         n_rows,
@@ -214,6 +237,7 @@ pub fn fetch_dicts(cur_obj: Obj, n_rows: ?usize) !Obj {
     }
 
     return fetch_py(
+        &try cur.result_set.?.fetchPyState(),
         &cur.result_set.?.result_set,
         std.heap.smp_allocator,
         n_rows,
@@ -230,6 +254,7 @@ pub fn fetch_named(cur_obj: Obj, n_rows: ?usize) !Obj {
         cur.result_set = try .init(cur.*, std.heap.smp_allocator);
     }
     return fetch_py(
+        &try cur.result_set.?.fetchPyState(),
         &cur.result_set.?.result_set,
         std.heap.smp_allocator,
         n_rows,
@@ -238,4 +263,9 @@ pub fn fetch_named(cur_obj: Obj, n_rows: ?usize) !Obj {
         void{},
         try cur.result_set.?.tupleType(),
     );
+}
+
+pub fn exp_put(val: Obj, con: Obj) ![]const u8 {
+    const env_con = try ConnectionCapsule.read_capsule(con);
+    return @tagName(try @import("put_py.zig").Conv.fromValue(val, env_con.py_funcs));
 }
