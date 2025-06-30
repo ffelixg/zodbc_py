@@ -44,45 +44,35 @@ pub inline fn decToString(dec: zodbc.c.SQL_NUMERIC_STRUCT) !struct { [DEC_BUF_LE
     return .{ buf, buf[start..end] };
 }
 
-const TimePrec = enum { s, ms, us, ns };
-fn TimeString(precision: TimePrec) type {
-    return [
-        switch (precision) {
-            .s => "12:34:56".len,
-            .ms => "12:34:56.123".len,
-            .us => "12:34:56.123456".len,
-            .ns => "12:34:56.123456789".len,
-        }
-    ]u8;
+fn TimeString(precision: comptime_int) type {
+    std.debug.assert(precision >= 0 and precision <= 9);
+    return ["12:34:56.".len + precision]u8;
 }
 pub inline fn timeToString(
-    comptime precision: TimePrec,
+    comptime precision: comptime_int,
     hour: u8,
     minute: u8,
     second: u8,
-    frac: if (precision == .s) void else u32,
+    frac: if (precision == 0) void else u32,
 ) TimeString(precision) {
     var ret: TimeString(precision) = undefined;
-    // comptime std.debug.assert(c_type == .char);
-    // const days = @divFloor(a_val, dt_info.?.frac * 60 * 60 * 24);
-    // const time = @mod(a_val, dt_info.?.frac * 60 * 60 * 24);
-    // std.debug.assert(days == 0);
-    const out = std.fmt.bufPrint(&ret, switch (precision) {
-        .s => "{:0>2}:{:0>2}:{:0>2}",
-        .ms => "{:0>2}:{:0>2}:{:0>2}.{:0>3}",
-        .us => "{:0>2}:{:0>2}:{:0>2}.{:0>6}",
-        .ns => "{:0>2}:{:0>2}:{:0>2}.{:0>9}",
-    }, .{
-        hour,
-        minute,
-        second,
-        switch (precision) {
-            .s => {},
-            .ms => @divFloor(frac, 1_000_000),
-            .us => @divFloor(frac, 1_000),
-            .ns => frac,
+    const precision_str = std.fmt.comptimePrint("{}", .{precision});
+    const out = std.fmt.bufPrint(
+        &ret,
+        if (precision == 0)
+            "{:0>2}:{:0>2}:{:0>2}"
+        else
+            "{:0>2}:{:0>2}:{:0>2}.{:0>" ++ precision_str ++ "}",
+        .{
+            hour,
+            minute,
+            second,
+            if (precision == 0)
+                void{}
+            else
+                @divFloor(frac, std.math.pow(usize, 10, 9 - precision)),
         },
-    }) catch unreachable;
+    ) catch unreachable;
     std.debug.assert(out.len == ret.len);
     return ret;
 }

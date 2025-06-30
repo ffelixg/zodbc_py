@@ -228,7 +228,7 @@ inline fn odbcToPy(
             return try pyCall(py_funcs.cls_time, .{ val.hour, val.minute, val.second, @divTrunc(val.fraction, 1000) });
         },
         .ss_time2_string => {
-            const time_str = fmt.timeToString(.ns, @intCast(val.hour), @intCast(val.minute), @intCast(val.second), @intCast(val.fraction));
+            const time_str = fmt.timeToString(9, @intCast(val.hour), @intCast(val.minute), @intCast(val.second), @intCast(val.fraction));
             return c.PyUnicode_FromStringAndSize(
                 time_str ++ "",
                 time_str.len,
@@ -247,7 +247,7 @@ inline fn odbcToPy(
         },
         .type_timestamp_string => {
             const dt_str = fmt.dateToString(@intCast(val.year), @intCast(val.month), @intCast(val.day));
-            const time_str = fmt.timeToString(.ns, @intCast(val.hour), @intCast(val.minute), @intCast(val.second), @intCast(val.fraction));
+            const time_str = fmt.timeToString(9, @intCast(val.hour), @intCast(val.minute), @intCast(val.second), @intCast(val.fraction));
             return c.PyUnicode_FromStringAndSize(
                 dt_str ++ "T" ++ time_str,
                 dt_str.len + 1 + time_str.len,
