@@ -88,3 +88,18 @@ pub inline fn dateToString(year: u16, month: u8, day: u8) DateString {
     std.debug.assert(out.len == ret.len);
     return ret;
 }
+
+pub inline fn timezoneToString(timezone_hour: i8, timezone_minute: u8) [6]u8 {
+    var ret: [6]u8 = undefined;
+    const out = std.fmt.bufPrint(
+        &ret,
+        "{c}{:0>2}:{:0>2}",
+        .{
+            if (timezone_hour >= 0) @as(u8, '+') else @as(u8, '-'),
+            @as(u8, @intCast(if (timezone_hour >= 0) timezone_hour else -timezone_hour)),
+            timezone_minute,
+        },
+    ) catch unreachable;
+    std.debug.assert(out.len == ret.len);
+    return ret;
+}

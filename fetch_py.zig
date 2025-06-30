@@ -59,12 +59,12 @@ pub fn init(res: *zodbc.ResultSet, allocator: std.mem.Allocator, dt7_fetch: Dt7F
         cycle[it] = switch (col.c_type) {
             inline .type_timestamp, .ss_time2, .ss_timestampoffset => |c_type| blk: {
                 switch (dt7_fetch) {
-                    inline .micro, .nano => {
+                    .micro, .nano => {
                         const tag = comptime std.enums.nameCast(Conversions.Tags, @tagName(c_type) ++ "_micro");
                         comptime std.debug.assert(c_type.Type() == Conversions.Type(tag));
                         break :blk tag;
                     },
-                    inline .string => {
+                    .string => {
                         const prec = try res.stmt.colAttribute(@intCast(it + 1), .precision);
                         if (prec <= 6) {
                             const tag = comptime std.enums.nameCast(Conversions.Tags, @tagName(c_type) ++ "_micro");
@@ -241,6 +241,15 @@ inline fn odbcToPy(
             });
             const tz = try pyCall(py_funcs.cls_timezone, .{td});
             return try pyCall(py_funcs.cls_time, .{ val.hour, val.minute, val.second, @divTrunc(val.fraction, 1000), tz });
+        },
+        .ss_timestampoffset_string => {
+            const dt_str = fmt.dateToString(@intCast(val.year), @intCast(val.month), @intCast(val.day));
+            const time_str = fmt.timeToString(9, @intCast(val.hour), @intCast(val.minute), @intCast(val.second), @intCast(val.fraction));
+            const tz_str = fmt.timezoneToString(@intCast(val.timezone_hour), @intCast(val.timezone_minute));
+            return c.PyUnicode_FromStringAndSize(
+                dt_str ++ " " ++ time_str ++ " " ++ tz_str,
+                dt_str.len + 1 + time_str.len + 1 + tz_str.len,
+            ) orelse py.PyErr;
         },
         .type_timestamp_micro => {
             return try pyCall(py_funcs.cls_datetime, .{ val.year, val.month, val.day, val.hour, val.minute, val.second, @divTrunc(val.fraction, 1000) });
