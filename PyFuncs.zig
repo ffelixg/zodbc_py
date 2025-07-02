@@ -7,6 +7,7 @@ cls_time: Obj,
 cls_timezone: Obj,
 cls_timedelta: Obj,
 cls_decimal: Obj,
+func_decimal_intratio: Obj,
 cls_uuid: Obj,
 
 pub fn init() !@This() {
@@ -27,6 +28,8 @@ pub fn init() !@This() {
     defer c.Py_DECREF(mod_decimal);
     const cls_decimal = c.PyObject_GetAttrString(mod_decimal, "Decimal") orelse return error.PyErr;
     errdefer c.Py_DECREF(cls_decimal);
+    const func_decimal_intratio = c.PyObject_GetAttrString(cls_decimal, "as_integer_ratio") orelse return error.PyErr;
+    errdefer c.Py_DECREF(func_decimal_intratio);
 
     const mod_uuid = c.PyImport_ImportModule("uuid") orelse return error.PyErr;
     defer c.Py_DECREF(mod_uuid);
@@ -40,6 +43,7 @@ pub fn init() !@This() {
         .cls_timezone = cls_timezone,
         .cls_timedelta = cls_timedelta,
         .cls_decimal = cls_decimal,
+        .func_decimal_intratio = func_decimal_intratio,
         .cls_uuid = cls_uuid,
     };
 }
@@ -51,5 +55,6 @@ pub fn deinit(self: @This()) void {
     c.Py_DECREF(self.cls_timezone);
     c.Py_DECREF(self.cls_timedelta);
     c.Py_DECREF(self.cls_decimal);
+    c.Py_DECREF(self.func_decimal_intratio);
     c.Py_DECREF(self.cls_uuid);
 }

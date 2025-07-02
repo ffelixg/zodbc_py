@@ -36,11 +36,11 @@ class Cursor:
         self._con = con
         self._cursor = _zodbc.cursor(con._con, datetime2_7_fetch)
 
-    def execute(self, query: str):
+    def execute(self, query: str, params: typing.Sequence[typing.Any] = ()):
         """
         Execute a SQL query.
         """
-        _zodbc.execute(self._cursor, query)
+        _zodbc.execute(self._cursor, query, params)
 
     def arrow_batch(self, n_rows: int) -> "pyarrow.RecordBatch":
         import pyarrow

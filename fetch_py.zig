@@ -5,6 +5,7 @@ const c = py.py;
 const Obj = *c.PyObject;
 const PyFuncs = @import("PyFuncs.zig");
 const fmt = @import("fmt.zig");
+const pyCall = @import("utils.zig").pyCall;
 
 const CDataType = zodbc.odbc.types.CDataType;
 
@@ -285,19 +286,4 @@ inline fn odbcToPy(
         // else => @compileError("missing conversion for Conversion.Tag: " ++ @tagName(conv)),
     }
     comptime unreachable;
-}
-
-inline fn pyCall(func: Obj, args: anytype) !Obj {
-    // without limited api, PyObject_Vectorcall would give better performance
-    const py_args = try @call(
-        .always_inline,
-        py.zig_to_py,
-        .{args},
-    );
-    defer c.Py_DECREF(py_args);
-    return c.PyObject_Call(
-        func,
-        py_args,
-        null,
-    ) orelse return py.PyErr;
 }

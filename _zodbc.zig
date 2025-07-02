@@ -3,6 +3,7 @@ const py = @import("py");
 const zodbc = @import("zodbc");
 const PyFuncs = @import("PyFuncs.zig");
 const FetchPy = @import("fetch_py.zig");
+const put_py = @import("put_py.zig");
 const fetch_py = FetchPy.fetch_py;
 const c = py.py;
 const Obj = *c.PyObject;
@@ -50,6 +51,7 @@ const Stmt = struct {
 
         fn deinit(self: *@This()) void {
             self.result_set.deinit();
+            self.result_set.stmt.closeCursor() catch unreachable;
             if (self.cache_column_names) |*names| {
                 for (names.items) |name| {
                     std.heap.smp_allocator.free(name);
@@ -133,6 +135,7 @@ const Stmt = struct {
     fn deinit(self: *Stmt) callconv(.c) void {
         if (self.result_set) |*result_set| {
             result_set.deinit();
+            self.result_set = null;
         }
         self.stmt.deinit();
         c.Py_DECREF(self.env_con_caps);
@@ -191,13 +194,23 @@ pub fn cursor(con: Obj, datetime2_7_fetch: FetchPy.Dt7Fetch) !Obj {
     });
 }
 
-pub fn execute(cur_obj: Obj, query: []const u8) !void {
+pub fn execute(cur_obj: Obj, query: []const u8, py_params: Obj) !void {
     const cur = try StmtCapsule.read_capsule(cur_obj);
     if (cur.result_set) |*result_set| {
-        cur.result_set = null;
         result_set.deinit();
+        cur.result_set = null;
     }
-    try cur.stmt.execDirect(query);
+
+    var params = try put_py.bindParams(
+        cur.stmt,
+        py_params,
+        std.heap.smp_allocator,
+        cur.env_con.py_funcs,
+    );
+    defer put_py.deinitParams(&params, std.heap.smp_allocator);
+    defer cur.stmt.free(.reset_params) catch unreachable;
+
+    cur.stmt.execDirect(query) catch return cur.stmt.getLastError();
 }
 
 pub fn fetch_many(cur_obj: Obj, n_rows: ?usize) !Obj {

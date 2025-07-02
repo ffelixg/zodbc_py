@@ -44,7 +44,7 @@ pub inline fn decToString(dec: zodbc.c.SQL_NUMERIC_STRUCT) !struct { [DEC_BUF_LE
     return .{ buf, buf[start..end] };
 }
 
-fn TimeString(precision: comptime_int) type {
+pub fn TimeString(precision: comptime_int) type {
     std.debug.assert(precision >= 0 and precision <= 9);
     return ["12:34:56.".len + precision]u8;
 }
@@ -64,20 +64,17 @@ pub inline fn timeToString(
         else
             "{:0>2}:{:0>2}:{:0>2}.{:0>" ++ precision_str ++ "}",
         .{
-            hour,
-            minute,
-            second,
-            if (precision == 0)
+            hour, minute, second, if (precision == 0)
                 void{}
             else
-                @divFloor(frac, std.math.pow(usize, 10, 9 - precision)),
+                frac,
         },
     ) catch unreachable;
     std.debug.assert(out.len == ret.len);
     return ret;
 }
 
-const DateString = ["0001-01-01".len]u8;
+pub const DateString = ["0001-01-01".len]u8;
 pub inline fn dateToString(year: u16, month: u8, day: u8) DateString {
     var ret: DateString = undefined;
     const out = std.fmt.bufPrint(
@@ -102,4 +99,53 @@ pub inline fn timezoneToString(timezone_hour: i8, timezone_minute: u8) [6]u8 {
     ) catch unreachable;
     std.debug.assert(out.len == ret.len);
     return ret;
+}
+
+pub inline fn parseDecimal(dec: []const u8) !zodbc.c.SQL_NUMERIC_STRUCT {
+    var ix: u8 = 0;
+    const sign: u1 = switch (dec[0]) {
+        '-' => blk: {
+            ix += 1;
+            break :blk 0;
+        },
+        '+' => blk: {
+            ix += 1;
+            break :blk 1;
+        },
+        else => 1,
+    };
+    var value: u128 = 0;
+    var precision: u7 = 0;
+    var scale: u7 = 0;
+    var encountered_dot: bool = false;
+    sw: switch (dec[ix]) {
+        '0'...'9' => |val| {
+            precision += 1;
+            scale += 1;
+            if (value >= comptime std.math.maxInt(u128) / 10 - 255 + '0')
+                return error.InvalidDecimal;
+            value = 10 * value + val - '0';
+            ix += 1;
+            if (ix == dec.len) {
+                @branchHint(.unlikely);
+                break :sw;
+            }
+            continue :sw dec[ix];
+        },
+        '.' => {
+            ix += 1;
+            scale = 0;
+            if (ix == dec.len or encountered_dot)
+                return error.InvalidDecimal;
+            encountered_dot = true;
+            continue :sw dec[ix];
+        },
+        else => return error.InvalidDecimal,
+    }
+    return .{
+        .val = @bitCast(value),
+        .sign = sign,
+        .precision = precision,
+        .scale = scale,
+    };
 }
