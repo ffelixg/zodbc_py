@@ -8,59 +8,7 @@ const CDataType = zodbc.odbc.types.CDataType;
 const utils = @import("utils.zig");
 const fmt = @import("fmt.zig");
 
-const Conversions = union(enum) {
-    // char: CDataType.char.Type(),
-    begin_row: void,
-    end_row: void,
-
-    wchar: CDataType.wchar.Type(),
-    // sshort: CDataType.sshort.Type(),
-    // ushort: CDataType.ushort.Type(),
-    slong: CDataType.slong.Type(),
-    // ulong: CDataType.ulong.Type(),
-    // float: CDataType.float.Type(),
-    double: CDataType.double.Type(),
-    bit: CDataType.bit.Type(),
-    // stinyint: CDataType.stinyint.Type(),
-    // utinyint: CDataType.utinyint.Type(),
-    sbigint: CDataType.sbigint.Type(),
-    // ubigint: CDataType.ubigint.Type(),
-    binary: CDataType.binary.Type(),
-    numeric_string: CDataType.char.Type(),
-    guid: CDataType.guid.Type(),
-    type_date: CDataType.type_date.Type(),
-    type_time_string: CDataType.char.Type(),
-    type_timestamp: CDataType.type_timestamp.Type(),
-    ss_timestampoffset: CDataType.ss_timestampoffset.Type(),
-
-    const Tags = @typeInfo(@This()).@"union".tag_type.?;
-
-    fn Type(tag: Tags) type {
-        return @FieldType(@This(), @tagName(tag));
-    }
-
-    fn asTypeValue(comptime tag: Tags, data: []u8) Type(tag) {
-        return std.mem.bytesToValue(Type(tag), data);
-    }
-};
-
 pub const Conv = enum {
-    // int,
-    // bigint,
-    // float,
-    // bit,
-    // datetime,
-    // date,
-    // time,
-    // datetimeoffset,
-    // decimal,
-    // uuid,
-    // binary,
-    // str,
-
-    // begin_row,
-    // end_row,
-
     wchar,
     binary,
     slong,
@@ -104,23 +52,6 @@ pub const Conv = enum {
         }
     }
 };
-
-// pub fn bindParams(
-//     stmt: zodbc.Statement,
-//     params: Obj,
-//     py_funcs: PyFuncs,
-// ) !void {
-//     const ipd = try zodbc.Descriptor.ImpParamDesc.fromStatement(stmt);
-//     const apd = try zodbc.Descriptor.AppParamDesc.fromStatement(stmt);
-
-//     const n_cols = std.math.cast(usize, c.PySequence_Length(params)) orelse return error.PyErr;
-//     for (0..n_cols) |i_col| {
-//         const py_val = c.PySequence_GetItem(params, @intCast(i_col)) orelse return error.PyErr;
-//         defer c.Py_DECREF(py_val);
-//         const conv = try Conv.fromValue(py_val, py_funcs);
-
-//     }
-// }
 
 fn createOdbcVal(
     allocator: std.mem.Allocator,
@@ -260,48 +191,6 @@ pub fn bindParams(
                     try py.py_to_zig(CDataType.bit.Type(), py_val, null),
                 ),
             },
-            // .numeric_string => .{
-            //     .c_type = .char,
-            //     .sql_type = .varchar,
-            //     .data = if (is_null) null else blk: {
-            //         const as_str = c.PyObject_Str(py_val) orelse return error.PyErr;
-            //         defer c.Py_DECREF(as_str);
-            //         var size: c.Py_ssize_t = -1;
-            //         const char_ptr = c.PyUnicode_AsUTF8AndSize(as_str, &size) orelse return error.PyErr;
-            //         if (size < 0) {
-            //             return error.PyErr;
-            //         }
-            //         break :blk try allocator.dupe(u8, char_ptr[0..@intCast(size)]);
-            //     },
-            // },
-            // .numeric_string => blk: {
-            //     // TODO won't work for large width
-            //     const as_ratio: Obj = try pyCall(py_funcs.func_decimal_intratio, .{@as(Obj, py_val)});
-            //     defer c.Py_DECREF(as_ratio);
-            //     const num, const div = try py.py_to_zig(
-            //         struct { i64, u64 },
-            //         as_ratio,
-            //         null,
-            //     );
-            //     const val: u128 = @intCast(if (num >= 0) num else -num);
-            //     const scale: u7 = @intCast(std.math.log10(div));
-            //     const precision: u7 = @intCast(std.math.log10(val) + 1);
-            //     const dec = zodbc.c.SQL_NUMERIC_STRUCT{
-            //         .val = @bitCast(val),
-            //         .sign = @intFromBool(num >= 0),
-            //         .scale = scale,
-            //         .precision = precision,
-            //     };
-            //     break :blk .{
-            //         .c_type = .numeric,
-            //         .sql_type = .numeric,
-            //         .data = if (is_null) null else try createOdbcVal(allocator, .numeric, dec),
-            //         .dec_info = .{
-            //             .precision = precision,
-            //             .scale = scale,
-            //         },
-            //     };
-            // },
             .numeric_string => blk: {
                 const as_str = c.PyObject_Str(py_val) orelse return error.PyErr;
                 defer c.Py_DECREF(as_str);
@@ -416,7 +305,6 @@ pub fn bindParams(
                     .isstr = false,
                 },
             },
-            // inline else => |x| @panic("TODO " ++ @tagName(x)),
         });
 
         const param = &params.items[i_param];
@@ -443,7 +331,6 @@ pub fn bindParams(
                 try apd.setField(@intCast(i_param + 1), .scale, dt_info.prec);
             }
             try ipd.setField(@intCast(i_param + 1), .datetime_interval_precision, dt_info.strlen);
-            // try ipd.setField(@intCast(i_param + 1), .datetime_interval_code, );
             try ipd.setField(@intCast(i_param + 1), .precision, dt_info.prec);
             try ipd.setField(@intCast(i_param + 1), .scale, dt_info.prec);
         } else if (param.c_type == .wchar or param.c_type == .binary or param.c_type == .char) {
