@@ -19,11 +19,29 @@ class Connection:
     def autocommit(self, value: bool):
         _zodbc.setAutocommit(self._con, value)
 
-    def cursor(self, datetime2_7_fetch: Datetime2_7_Fetch) -> "Cursor":
+    def cursor(self, datetime2_7_fetch: Datetime2_7_Fetch = Datetime2_7_Fetch.micro) -> "Cursor":
         """
         Create a new cursor object.
         """
         return Cursor(self, datetime2_7_fetch)
+    
+    def getinfo(self, info_type: str) -> str:
+        return _zodbc.getinfo(self._con, info_type)
+
+    def commit(self):
+        _zodbc.commit(self._con)    
+
+    def rollback(self):
+        _zodbc.rollback(self._con)
+
+    @property
+    def closed(self) -> bool:
+        # TODO
+        return False
+
+    def close(self):
+        # TODO
+        return
 
 def connect(constr: str) -> Connection:
     """
@@ -32,15 +50,20 @@ def connect(constr: str) -> Connection:
     return Connection(constr)
 
 class Cursor:
-    def __init__(self, con: Connection, datetime2_7_fetch: Datetime2_7_Fetch):
+    def __init__(self, con: Connection, datetime2_7_fetch: Datetime2_7_Fetch = Datetime2_7_Fetch.micro):
         self._con = con
         self._cursor = _zodbc.cursor(con._con, datetime2_7_fetch)
 
-    def execute(self, query: str, params: typing.Sequence[typing.Any] = ()):
+    def close(self):
+        # TODO
+        return
+
+    def execute(self, query: str, params: typing.Sequence[typing.Any] = ()) -> "Cursor":
         """
         Execute a SQL query.
         """
         _zodbc.execute(self._cursor, query, params)
+        return self
 
     def arrow_batch(self, n_rows: int) -> "pyarrow.RecordBatch":
         import pyarrow
@@ -78,3 +101,10 @@ class Cursor:
             return self.arrow().to_pylist()
         else:
             return self.arrow_batch(n).to_pylist()
+
+    def fetchone(self) -> tuple:
+        one = self.fetch_many(1)
+        if one:
+            return one[0]
+        else:
+            return None

@@ -16,7 +16,8 @@ const EnvCon = struct {
     py_funcs: PyFuncs,
 
     fn deinit(self: *EnvCon) callconv(.c) void {
-        self.con.disconnect() catch unreachable;
+        self.con.endTran(.rollback) catch self.con.getLastError() catch unreachable;
+        self.con.disconnect() catch self.con.getLastError() catch unreachable;
         self.con.deinit();
         self.env.deinit();
         self.py_funcs.deinit();
@@ -34,18 +35,18 @@ const Stmt = struct {
     dt7_fetch: FetchPy.Dt7Fetch,
     result_set: ?struct {
         result_set: zodbc.ResultSet,
-        dt7_fetch: FetchPy.Dt7Fetch,
+        stmt: *const Stmt,
         cache_column_names: ?std.ArrayListUnmanaged([:0]const u8) = null,
         cache_tuple_type: ?*c.PyTypeObject = null,
         cache_fetch_py_state: ?FetchPy = null,
 
-        fn init(stmt: Stmt, allocator: std.mem.Allocator) !@This() {
+        fn init(stmt: *const Stmt, allocator: std.mem.Allocator) !@This() {
             return .{
                 .result_set = try .init(
                     stmt.stmt,
                     allocator,
                 ),
-                .dt7_fetch = stmt.dt7_fetch,
+                .stmt = stmt,
             };
         }
 
@@ -125,7 +126,7 @@ const Stmt = struct {
             const fp = try FetchPy.init(
                 &self.result_set,
                 std.heap.smp_allocator,
-                self.dt7_fetch,
+                self.stmt.dt7_fetch,
             );
             self.cache_fetch_py_state = fp;
             return fp;
@@ -210,13 +211,17 @@ pub fn execute(cur_obj: Obj, query: []const u8, py_params: Obj) !void {
     defer put_py.deinitParams(&params, std.heap.smp_allocator);
     defer cur.stmt.free(.reset_params) catch unreachable;
 
-    cur.stmt.execDirect(query) catch return cur.stmt.getLastError();
+    cur.stmt.execDirect(query) catch |err| switch (err) {
+        error.ExecDirectSuccessWithInfo, error.ExecDirectError => return cur.stmt.getLastError(),
+        error.ExecDirectNoData => return,
+        else => return err,
+    };
 }
 
 pub fn fetch_many(cur_obj: Obj, n_rows: ?usize) !Obj {
     const cur = try StmtCapsule.read_capsule(cur_obj);
     if (cur.result_set == null) {
-        cur.result_set = try .init(cur.*, std.heap.smp_allocator);
+        cur.result_set = try .init(cur, std.heap.smp_allocator);
     }
     return fetch_py(
         &try cur.result_set.?.fetchPyState(),
@@ -233,7 +238,7 @@ pub fn fetch_many(cur_obj: Obj, n_rows: ?usize) !Obj {
 pub fn fetch_dicts(cur_obj: Obj, n_rows: ?usize) !Obj {
     const cur = try StmtCapsule.read_capsule(cur_obj);
     if (cur.result_set == null) {
-        cur.result_set = try .init(cur.*, std.heap.smp_allocator);
+        cur.result_set = try .init(cur, std.heap.smp_allocator);
     }
 
     const names = try cur.result_set.?.columnNames();
@@ -264,7 +269,7 @@ pub fn fetch_dicts(cur_obj: Obj, n_rows: ?usize) !Obj {
 pub fn fetch_named(cur_obj: Obj, n_rows: ?usize) !Obj {
     const cur = try StmtCapsule.read_capsule(cur_obj);
     if (cur.result_set == null) {
-        cur.result_set = try .init(cur.*, std.heap.smp_allocator);
+        cur.result_set = try .init(cur, std.heap.smp_allocator);
     }
     return fetch_py(
         &try cur.result_set.?.fetchPyState(),
@@ -281,4 +286,30 @@ pub fn fetch_named(cur_obj: Obj, n_rows: ?usize) !Obj {
 pub fn exp_put(val: Obj, con: Obj) ![]const u8 {
     const env_con = try ConnectionCapsule.read_capsule(con);
     return @tagName(try @import("put_py.zig").Conv.fromValue(val, env_con.py_funcs));
+}
+
+pub fn getinfo(con: Obj, info_name: []const u8) !Obj {
+    const env_con = try ConnectionCapsule.read_capsule(con);
+    // inline for (@typeInfo(zodbc.odbc.info.InfoTypeString).@"enum") |field| {
+    const info_e = inline for (comptime std.enums.values(zodbc.odbc.info.InfoTypeString)) |info_e| {
+        if (std.mem.eql(u8, @tagName(info_e), info_name)) {
+            break info_e;
+        }
+    } else return py.raise(.NotImplemented, "getinfo for {s} not implemented", .{info_name});
+    const info = try env_con.con.getInfoString(
+        std.heap.smp_allocator,
+        info_e,
+    );
+    defer std.heap.smp_allocator.free(info);
+    return c.PyUnicode_FromStringAndSize(info.ptr, @intCast(info.len)) orelse return PyErr;
+}
+
+pub fn commit(con: Obj) !void {
+    const env_con = try ConnectionCapsule.read_capsule(con);
+    try env_con.con.endTran(.commit);
+}
+
+pub fn rollback(con: Obj) !void {
+    const env_con = try ConnectionCapsule.read_capsule(con);
+    try env_con.con.endTran(.rollback);
 }

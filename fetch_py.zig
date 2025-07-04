@@ -51,7 +51,7 @@ const Conversions = union(enum) {
 
 cycle: []Conversions.Tags,
 
-pub const Dt7Fetch = enum(u15) { micro = 1, string = 2, nano = 3 };
+pub const Dt7Fetch = enum(u4) { micro = 1, string = 2, nano = 3 };
 
 pub fn init(res: *zodbc.ResultSet, allocator: std.mem.Allocator, dt7_fetch: Dt7Fetch) !@This() {
     const cycle = try allocator.alloc(Conversions.Tags, res.n_cols + 1);
