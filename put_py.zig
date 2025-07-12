@@ -23,7 +23,9 @@ pub const Conv = enum {
     // ss_timestampoffset, // TODO
 
     pub fn fromValue(val: Obj, funcs: PyFuncs) !Conv {
-        if (1 == c.PyFloat_Check(val)) {
+        if (c.Py_IsNone(val) == 1) {
+            return .wchar;
+        } else if (1 == c.PyFloat_Check(val)) {
             return .double;
         } else if (1 == c.PyBool_Check(val)) {
             return .bit;
@@ -144,7 +146,7 @@ pub fn bindParams(
             },
             .binary => .{
                 .c_type = .binary,
-                .sql_type = .binary,
+                .sql_type = .varbinary,
                 .data = if (is_null) null else blk: {
                     var ptr: [*c]u8 = null;
                     var size: c.Py_ssize_t = -1;
@@ -336,12 +338,19 @@ pub fn bindParams(
         } else if (param.c_type == .wchar or param.c_type == .binary or param.c_type == .char) {
             var len = if (param.data) |buf| buf.len else 0;
             len = (@divFloor(len, 800) + 1) * 800;
+            if (param.c_type == .wchar) {
+                len = @divExact(len, 2);
+            }
+            // send as (n)var..(max) for now
+            len = 0;
             try ipd.setField(@intCast(i_param + 1), .precision, @intCast(len));
+            try ipd.setField(@intCast(i_param + 1), .length, @intCast(len));
             try apd.setField(@intCast(i_param + 1), .octet_length_ptr, @ptrCast(&param.ind));
         }
         try apd.setField(@intCast(i_param + 1), .indicator_ptr, @ptrCast(&param.ind));
         if (param.data) |buf| {
-            try apd.setField(@intCast(i_param + 1), .data_ptr, buf.ptr);
+            // validation is performed here
+            apd.setField(@intCast(i_param + 1), .data_ptr, buf.ptr) catch return apd.getLastError();
         }
         try ipd.setField(@intCast(i_param + 1), .parameter_type, .input);
     }

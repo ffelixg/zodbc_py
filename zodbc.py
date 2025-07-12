@@ -36,12 +36,13 @@ class Connection:
 
     @property
     def closed(self) -> bool:
-        # TODO
-        return False
+        if self._con is None:
+            return True
+        return _zodbc.con_closed(self._con)
 
     def close(self):
-        # TODO
-        return
+        _zodbc.con_close(self._con)
+        self._con = None
 
 def connect(constr: str) -> Connection:
     """
@@ -55,13 +56,19 @@ class Cursor:
         self._cursor = _zodbc.cursor(con._con, datetime2_7_fetch)
 
     def close(self):
-        # TODO
-        return
+        _zodbc.cur_deinit(self._cursor)
+        self._cursor = None
 
-    def execute(self, query: str, params: typing.Sequence[typing.Any] = ()) -> "Cursor":
+    def execute(self, query: str, *args: typing.Any) -> "Cursor":
+    # def execute(self, query: str, params: typing.Sequence[typing.Any] = ()) -> "Cursor":
         """
         Execute a SQL query.
         """
+        # pyodbc compatibility
+        if len(args) == 1 and isinstance(args[0], (list, tuple)):
+            params = args[0]
+        else:
+            params = args
         _zodbc.execute(self._cursor, query, params)
         return self
 
@@ -83,28 +90,44 @@ class Cursor:
             batches.append(batch)
         return pyarrow.Table.from_batches(batches, schema=batches[0].schema)
 
-    def fetchmany(self, n: int) -> list[tuple]:
-        return list(zip(*self.arrow_batch(n).to_pydict().values()))
+    def fetchtuples(self, n: int | None = None) -> list[tuple[typing.Any]]:
+        return _zodbc.fetchmany(self._cursor, n)
 
-    def fetch_many(self, n: int | None = None) -> list[tuple]:
-        return _zodbc.fetch_many(self._cursor, n)
+    def fetchdicts(self, n: int | None = None) -> list[dict[str, typing.Any]]:
+        return _zodbc.fetchdicts(self._cursor, n)
 
-    def fetch_dicts(self, n: int | None = None) -> list[dict[str, typing.Any]]:
-        return _zodbc.fetch_dicts(self._cursor, n)
+    def fetchnamed(self, n: int | None = None) -> list[typing.Any]:
+        return _zodbc.fetchnamed(self._cursor, n)
 
-    def fetch_named(self, n: int | None = None) -> list[dict[str, typing.Any]]:
-        return _zodbc.fetch_named(self._cursor, n)
+    def fetchmany(self, n: int | None = None) -> list[tuple[typing.Any]]:
+        return _zodbc.fetchmany(self._cursor, n)
 
-    def records(self, n: int | None = None) -> list[dict]:
-        assert n is None or n >= 0
-        if n is None:
-            return self.arrow().to_pylist()
-        else:
-            return self.arrow_batch(n).to_pylist()
-
-    def fetchone(self) -> tuple:
-        one = self.fetch_many(1)
+    def fetchone(self) -> tuple[typing.Any]:
+        one = self.fetchmany(1)
         if one:
             return one[0]
         else:
             return None
+
+    def fetchval(self) -> typing.Any:
+        # pyodbc compatibility
+        one = self.fetchmany(1)
+        if one:
+            return one[0][0]
+        else:
+            return None
+
+    def fetchall(self) -> list[tuple[typing.Any]]:
+        return self.fetchmany()
+
+    def __iter__(self):
+        return self
+
+    def __next__(self) -> tuple[typing.Any]:
+        if row := self.fetchone():
+            return row
+        else:
+            raise StopIteration
+
+    def nextset(self) -> bool:
+        return _zodbc.nextset(self._cursor)

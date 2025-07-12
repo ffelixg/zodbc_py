@@ -115,12 +115,10 @@ pub inline fn parseDecimal(dec: []const u8) !zodbc.c.SQL_NUMERIC_STRUCT {
         else => 1,
     };
     var value: u128 = 0;
-    var precision: u7 = 0;
     var scale: u7 = 0;
     var encountered_dot: bool = false;
     sw: switch (dec[ix]) {
         '0'...'9' => |val| {
-            precision += 1;
             scale += 1;
             if (value >= comptime std.math.maxInt(u128) / 10 - 255 + '0')
                 return error.InvalidDecimal;
@@ -128,20 +126,57 @@ pub inline fn parseDecimal(dec: []const u8) !zodbc.c.SQL_NUMERIC_STRUCT {
             ix += 1;
             if (ix == dec.len) {
                 @branchHint(.unlikely);
+                if (!encountered_dot) {
+                    scale = 0;
+                }
                 break :sw;
             }
             continue :sw dec[ix];
         },
         '.' => {
-            ix += 1;
             scale = 0;
+            ix += 1;
             if (ix == dec.len or encountered_dot)
                 return error.InvalidDecimal;
             encountered_dot = true;
             continue :sw dec[ix];
         },
+        'e', 'E' => {
+            if (!encountered_dot) {
+                scale = 0;
+            }
+            ix += 1;
+            if (ix >= dec.len - 1)
+                return error.InvalidDecimal4;
+            const exp_value = std.fmt.parseInt(u7, dec[ix + 1 ..], 10) catch return error.InvalidDecimal3;
+            switch (dec[ix]) {
+                '-' => {
+                    scale += exp_value;
+                },
+                '+' => {
+                    if (scale < exp_value) {
+                        value = std.math.mul(
+                            u128,
+                            value,
+                            std.math.pow(u128, 10, exp_value - scale),
+                        ) catch return error.InvalidDecimal2;
+                        scale = 0;
+                    } else {
+                        scale -= exp_value;
+                    }
+                },
+                else => return error.InvalidDecimal1,
+            }
+        },
         else => return error.InvalidDecimal,
     }
+    const precision: u7 = @intCast(@max(
+        scale,
+        std.math.log10(value) + 1,
+    ));
+    std.debug.print("dec: {s}, value: {}, scale: {}, precision: {}\n", .{
+        dec, value, scale, precision,
+    });
     return .{
         .val = @bitCast(value),
         .sign = sign,

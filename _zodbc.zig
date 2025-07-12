@@ -14,13 +14,21 @@ const EnvCon = struct {
     env: zodbc.Environment,
     con: zodbc.Connection,
     py_funcs: PyFuncs,
+    closed: bool = false,
 
-    fn deinit(self: *EnvCon) callconv(.c) void {
+    fn close(self: *EnvCon) void {
+        if (self.closed) return;
+        self.closed = true;
         self.con.endTran(.rollback) catch self.con.getLastError() catch unreachable;
         self.con.disconnect() catch self.con.getLastError() catch unreachable;
+    }
+
+    /// Only called via garbage collection
+    fn deinit(self: *EnvCon) callconv(.c) void {
+        self.close();
+        self.py_funcs.deinit();
         self.con.deinit();
         self.env.deinit();
-        self.py_funcs.deinit();
     }
 };
 const ConnectionCapsule = py.PyCapsule(EnvCon, "zodbc_con", EnvCon.deinit);
@@ -33,6 +41,7 @@ const Stmt = struct {
     /// Borrowed reference
     env_con: *const EnvCon,
     dt7_fetch: FetchPy.Dt7Fetch,
+
     result_set: ?struct {
         result_set: zodbc.ResultSet,
         stmt: *const Stmt,
@@ -52,7 +61,6 @@ const Stmt = struct {
 
         fn deinit(self: *@This()) void {
             self.result_set.deinit();
-            self.result_set.stmt.closeCursor() catch unreachable;
             if (self.cache_column_names) |*names| {
                 for (names.items) |name| {
                     std.heap.smp_allocator.free(name);
@@ -196,9 +204,12 @@ pub fn cursor(con: Obj, datetime2_7_fetch: FetchPy.Dt7Fetch) !Obj {
 }
 
 pub fn execute(cur_obj: Obj, query: []const u8, py_params: Obj) !void {
+    if (c.PySequence_Check(py_params) == 0)
+        return py.raise(.TypeError, "Parameters must be a sequence", .{});
     const cur = try StmtCapsule.read_capsule(cur_obj);
     if (cur.result_set) |*result_set| {
         result_set.deinit();
+        result_set.stmt.stmt.closeCursor() catch unreachable;
         cur.result_set = null;
     }
 
@@ -218,7 +229,7 @@ pub fn execute(cur_obj: Obj, query: []const u8, py_params: Obj) !void {
     };
 }
 
-pub fn fetch_many(cur_obj: Obj, n_rows: ?usize) !Obj {
+pub fn fetchmany(cur_obj: Obj, n_rows: ?usize) !Obj {
     const cur = try StmtCapsule.read_capsule(cur_obj);
     if (cur.result_set == null) {
         cur.result_set = try .init(cur, std.heap.smp_allocator);
@@ -235,7 +246,7 @@ pub fn fetch_many(cur_obj: Obj, n_rows: ?usize) !Obj {
     );
 }
 
-pub fn fetch_dicts(cur_obj: Obj, n_rows: ?usize) !Obj {
+pub fn fetchdicts(cur_obj: Obj, n_rows: ?usize) !Obj {
     const cur = try StmtCapsule.read_capsule(cur_obj);
     if (cur.result_set == null) {
         cur.result_set = try .init(cur, std.heap.smp_allocator);
@@ -266,7 +277,7 @@ pub fn fetch_dicts(cur_obj: Obj, n_rows: ?usize) !Obj {
     );
 }
 
-pub fn fetch_named(cur_obj: Obj, n_rows: ?usize) !Obj {
+pub fn fetchnamed(cur_obj: Obj, n_rows: ?usize) !Obj {
     const cur = try StmtCapsule.read_capsule(cur_obj);
     if (cur.result_set == null) {
         cur.result_set = try .init(cur, std.heap.smp_allocator);
@@ -312,4 +323,32 @@ pub fn commit(con: Obj) !void {
 pub fn rollback(con: Obj) !void {
     const env_con = try ConnectionCapsule.read_capsule(con);
     try env_con.con.endTran(.rollback);
+}
+
+pub fn nextset(cur_obj: Obj) !bool {
+    const cur = try StmtCapsule.read_capsule(cur_obj);
+    if (cur.result_set) |*result_set| {
+        result_set.deinit();
+        cur.result_set = null;
+    }
+    cur.stmt.moreResults() catch |err| switch (err) {
+        error.MoreResultsNoData => return false,
+        else => return err,
+    };
+    return true;
+}
+
+pub fn con_close(con: Obj) !void {
+    const env_con = try ConnectionCapsule.read_capsule(con);
+    env_con.close();
+}
+
+pub fn con_closed(con: Obj) !bool {
+    const env_con = try ConnectionCapsule.read_capsule(con);
+    return env_con.closed;
+}
+
+pub fn cur_deinit(cur: Obj) !void {
+    const stmt = try StmtCapsule.read_capsule(cur);
+    stmt.deinit();
 }
