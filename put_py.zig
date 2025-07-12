@@ -81,9 +81,7 @@ const ParamList = std.ArrayListUnmanaged(struct {
     } = null,
 
     pub fn deinit(self: @This(), ally: std.mem.Allocator) void {
-        if (self.data) |buf| switch (self.c_type) {
-            inline else => |c_type| c_type.free(ally, buf),
-        };
+        if (self.data) |buf| self.c_type.free(ally, buf);
     }
 });
 

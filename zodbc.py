@@ -41,8 +41,10 @@ class Connection:
         return _zodbc.con_closed(self._con)
 
     def close(self):
-        _zodbc.con_close(self._con)
-        self._con = None
+        try:
+            _zodbc.con_close(self._con)
+        finally:
+            self._con = None
 
 def connect(constr: str) -> Connection:
     """
@@ -56,8 +58,10 @@ class Cursor:
         self._cursor = _zodbc.cursor(con._con, datetime2_7_fetch)
 
     def close(self):
-        _zodbc.cur_deinit(self._cursor)
-        self._cursor = None
+        try:
+            _zodbc.cur_deinit(self._cursor)
+        finally:
+            self._cursor = None
 
     def execute(self, query: str, *args: typing.Any) -> "Cursor":
     # def execute(self, query: str, params: typing.Sequence[typing.Any] = ()) -> "Cursor":

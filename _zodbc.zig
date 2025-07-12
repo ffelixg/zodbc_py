@@ -16,19 +16,20 @@ const EnvCon = struct {
     py_funcs: PyFuncs,
     closed: bool = false,
 
-    fn close(self: *EnvCon) void {
+    fn close(self: *EnvCon) !void {
         if (self.closed) return;
         self.closed = true;
-        self.con.endTran(.rollback) catch self.con.getLastError() catch unreachable;
-        self.con.disconnect() catch self.con.getLastError() catch unreachable;
+        self.con.endTran(.rollback) catch return self.con.getLastError();
+        self.con.disconnect() catch return self.con.getLastError();
     }
 
     /// Only called via garbage collection
     fn deinit(self: *EnvCon) callconv(.c) void {
-        self.close();
+        self.close() catch {};
         self.py_funcs.deinit();
-        self.con.deinit();
-        self.env.deinit();
+        // TODO maybe use python warnings?
+        self.con.deinit() catch {};
+        self.env.deinit() catch {};
     }
 };
 const ConnectionCapsule = py.PyCapsule(EnvCon, "zodbc_con", EnvCon.deinit);
@@ -59,8 +60,7 @@ const Stmt = struct {
             };
         }
 
-        fn deinit(self: *@This()) void {
-            self.result_set.deinit();
+        fn deinit(self: *@This()) !void {
             if (self.cache_column_names) |*names| {
                 for (names.items) |name| {
                     std.heap.smp_allocator.free(name);
@@ -73,6 +73,7 @@ const Stmt = struct {
             if (self.cache_fetch_py_state) |fp| {
                 fp.deinit(std.heap.smp_allocator);
             }
+            try self.result_set.deinit();
         }
 
         pub fn columnNames(self: *@This()) ![][:0]const u8 {
@@ -142,11 +143,15 @@ const Stmt = struct {
     } = null,
 
     fn deinit(self: *Stmt) callconv(.c) void {
+        deinit_err(self) catch {};
+    }
+
+    fn deinit_err(self: *Stmt) !void {
         if (self.result_set) |*result_set| {
-            result_set.deinit();
+            try result_set.deinit();
             self.result_set = null;
         }
-        self.stmt.deinit();
+        try self.stmt.deinit();
         c.Py_DECREF(self.env_con_caps);
     }
 };
@@ -154,12 +159,12 @@ const StmtCapsule = py.PyCapsule(Stmt, "zodbc_stmt", Stmt.deinit);
 
 pub fn connect(constr: []const u8) !Obj {
     const env = try zodbc.Environment.init(.v3_80);
-    errdefer env.deinit();
+    errdefer env.deinit() catch {};
     const con = try zodbc.Connection.init(env);
-    errdefer con.deinit();
+    errdefer con.deinit() catch {};
     try con.setConnectAttr(.{ .autocommit = .on });
     try con.connectWithString(constr);
-    errdefer con.disconnect() catch unreachable;
+    errdefer con.disconnect() catch {};
 
     const py_funcs = try PyFuncs.init();
     errdefer py_funcs.deinit();
@@ -194,7 +199,7 @@ pub fn getAutocommit(con: Obj) !bool {
 pub fn cursor(con: Obj, datetime2_7_fetch: FetchPy.Dt7Fetch) !Obj {
     const env_con = try ConnectionCapsule.read_capsule(con);
     const stmt = try zodbc.Statement.init(env_con.con);
-    errdefer stmt.deinit();
+    errdefer stmt.deinit() catch {};
     return try StmtCapsule.create_capsule(.{
         .stmt = stmt,
         .env_con_caps = c.Py_NewRef(con),
@@ -208,8 +213,8 @@ pub fn execute(cur_obj: Obj, query: []const u8, py_params: Obj) !void {
         return py.raise(.TypeError, "Parameters must be a sequence", .{});
     const cur = try StmtCapsule.read_capsule(cur_obj);
     if (cur.result_set) |*result_set| {
-        result_set.deinit();
-        result_set.stmt.stmt.closeCursor() catch unreachable;
+        try result_set.deinit();
+        try result_set.stmt.stmt.closeCursor();
         cur.result_set = null;
     }
 
@@ -220,13 +225,14 @@ pub fn execute(cur_obj: Obj, query: []const u8, py_params: Obj) !void {
         cur.env_con.py_funcs,
     );
     defer put_py.deinitParams(&params, std.heap.smp_allocator);
-    defer cur.stmt.free(.reset_params) catch unreachable;
+    errdefer cur.stmt.free(.reset_params) catch {};
 
     cur.stmt.execDirect(query) catch |err| switch (err) {
         error.ExecDirectSuccessWithInfo, error.ExecDirectError => return cur.stmt.getLastError(),
-        error.ExecDirectNoData => return,
+        error.ExecDirectNoData => {},
         else => return err,
     };
+    try cur.stmt.free(.reset_params);
 }
 
 pub fn fetchmany(cur_obj: Obj, n_rows: ?usize) !Obj {
@@ -328,7 +334,7 @@ pub fn rollback(con: Obj) !void {
 pub fn nextset(cur_obj: Obj) !bool {
     const cur = try StmtCapsule.read_capsule(cur_obj);
     if (cur.result_set) |*result_set| {
-        result_set.deinit();
+        try result_set.deinit();
         cur.result_set = null;
     }
     cur.stmt.moreResults() catch |err| switch (err) {
@@ -340,7 +346,7 @@ pub fn nextset(cur_obj: Obj) !bool {
 
 pub fn con_close(con: Obj) !void {
     const env_con = try ConnectionCapsule.read_capsule(con);
-    env_con.close();
+    try env_con.close();
 }
 
 pub fn con_closed(con: Obj) !bool {
@@ -350,5 +356,5 @@ pub fn con_closed(con: Obj) !bool {
 
 pub fn cur_deinit(cur: Obj) !void {
     const stmt = try StmtCapsule.read_capsule(cur);
-    stmt.deinit();
+    try stmt.deinit_err();
 }
