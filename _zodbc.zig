@@ -209,8 +209,6 @@ pub fn cursor(con: Obj, datetime2_7_fetch: FetchPy.Dt7Fetch) !Obj {
 }
 
 pub fn execute(cur_obj: Obj, query: []const u8, py_params: Obj) !void {
-    if (c.PySequence_Check(py_params) == 0)
-        return py.raise(.TypeError, "Parameters must be a sequence", .{});
     const cur = try StmtCapsule.read_capsule(cur_obj);
     if (cur.result_set) |*result_set| {
         try result_set.deinit();

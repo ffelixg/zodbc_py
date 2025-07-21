@@ -98,7 +98,12 @@ pub fn bindParams(
     allocator: std.mem.Allocator,
     py_funcs: PyFuncs,
 ) !ParamList {
-    const n_params = std.math.cast(usize, c.PySequence_Length(py_params)) orelse return error.PyErr;
+    const seq_or_dict: enum { seq, dict } = if (c.PySequence_Check(py_params) == 1) .seq else if (c.PyDict_Check(py_params) == 1) .dict else return py.raise(
+        .TypeError,
+        "Parameters must be a sequence or dict",
+        .{},
+    );
+    const n_params = std.math.cast(usize, c.PyObject_Length(py_params)) orelse return error.PyErr;
 
     var params = try ParamList.initCapacity(allocator, n_params);
     errdefer deinitParams(&params, allocator);
@@ -111,9 +116,28 @@ pub fn bindParams(
 
     try apd.setField(0, .count, @intCast(n_params));
 
+    const items_iter = if (seq_or_dict == .dict) blk: {
+        const py_items = c.PyObject_CallMethod(py_params, "items", "") orelse return error.PyErr;
+        defer c.Py_DECREF(py_items);
+        break :blk c.PyObject_GetIter(py_items) orelse return error.PyErr;
+    } else null;
+    defer if (items_iter) |iter| c.Py_DECREF(iter);
+
     for (0..n_params) |i_param| {
-        const py_val = c.PySequence_GetItem(py_params, @intCast(i_param)) orelse return error.PyErr;
+        const py_val, const py_param_name = if (seq_or_dict == .seq) .{
+            c.PySequence_GetItem(py_params, @intCast(i_param)) orelse return error.PyErr,
+            null,
+        } else blk: {
+            const item = c.PyIter_Next(items_iter) orelse return error.PyErr;
+            defer c.Py_DECREF(item);
+            std.debug.assert(c.PyObject_Length(item) == 2);
+            break :blk .{
+                c.PySequence_GetItem(item, 1) orelse return error.PyErr,
+                c.PySequence_GetItem(item, 0) orelse return error.PyErr,
+            };
+        };
         defer c.Py_DECREF(py_val);
+        defer if (py_param_name) |pn| c.Py_DECREF(pn);
 
         const conv = try Conv.fromValue(py_val, py_funcs);
 
@@ -351,6 +375,13 @@ pub fn bindParams(
             apd.setField(@intCast(i_param + 1), .data_ptr, buf.ptr) catch return apd.getLastError();
         }
         try ipd.setField(@intCast(i_param + 1), .parameter_type, .input);
+        if (py_param_name) |pn| {
+            var len: isize = 0;
+            const name = c.PyUnicode_AsUTF8AndSize(pn, &len) orelse return error.PyErr;
+            if (len < 0)
+                return error.PyErr;
+            try ipd.setFieldString(@intCast(i_param + 1), .name, name[0..@intCast(len)]);
+        }
     }
     return params;
 }

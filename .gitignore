@@ -4,3 +4,4 @@ build.zig
 build.zig.zon
 *.so
 *.zip
+__pycache__/**

@@ -63,16 +63,13 @@ class Cursor:
         finally:
             self._cursor = None
 
-    def execute(self, query: str, *args: typing.Any) -> "Cursor":
+    # def execute(self, query: str, *args: typing.Any) -> "Cursor":
     # def execute(self, query: str, params: typing.Sequence[typing.Any] = ()) -> "Cursor":
+    def execute(self, query: str, params: typing.Sequence[typing.Any] | dict[str, typing.Any] = ()) -> "Cursor":
         """
         Execute a SQL query.
         """
         # pyodbc compatibility
-        if len(args) == 1 and isinstance(args[0], (list, tuple)):
-            params = args[0]
-        else:
-            params = args
         _zodbc.execute(self._cursor, query, params)
         return self
 
