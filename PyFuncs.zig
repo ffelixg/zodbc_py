@@ -9,6 +9,7 @@ cls_timedelta: Obj,
 cls_decimal: Obj,
 func_decimal_intratio: Obj,
 cls_uuid: Obj,
+cls_atvp: Obj,
 
 pub fn init() !@This() {
     const mod_datetime = c.PyImport_ImportModule("datetime") orelse return error.PyErr;
@@ -36,6 +37,11 @@ pub fn init() !@This() {
     const cls_uuid = c.PyObject_GetAttrString(mod_uuid, "UUID") orelse return error.PyErr;
     errdefer c.Py_DECREF(cls_uuid);
 
+    const mod_shared = c.PyImport_ImportModule("shared") orelse return error.PyErr;
+    defer c.Py_DECREF(mod_shared);
+    const cls_atvp = c.PyObject_GetAttrString(mod_shared, "ArrowTVP") orelse return error.PyErr;
+    errdefer c.Py_DECREF(cls_atvp);
+
     return .{
         .cls_datetime = cls_datetime,
         .cls_date = cls_date,
@@ -45,6 +51,7 @@ pub fn init() !@This() {
         .cls_decimal = cls_decimal,
         .func_decimal_intratio = func_decimal_intratio,
         .cls_uuid = cls_uuid,
+        .cls_atvp = cls_atvp,
     };
 }
 
@@ -57,4 +64,5 @@ pub fn deinit(self: @This()) void {
     c.Py_DECREF(self.cls_decimal);
     c.Py_DECREF(self.func_decimal_intratio);
     c.Py_DECREF(self.cls_uuid);
+    c.Py_DECREF(self.cls_atvp);
 }

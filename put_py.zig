@@ -21,6 +21,7 @@ pub const Conv = enum {
     type_time_string,
     type_timestamp,
     // ss_timestampoffset, // TODO
+    arrow_table,
 
     pub fn fromValue(val: Obj, funcs: PyFuncs) !Conv {
         if (c.Py_IsNone(val) == 1) {
@@ -49,6 +50,8 @@ pub const Conv = enum {
             return .numeric_string;
         } else if (1 == c.PyObject_IsInstance(val, funcs.cls_uuid)) {
             return .guid;
+        } else if (1 == c.PyObject_IsInstance(val, funcs.cls_atvp)) {
+            return .arrow_table;
         } else {
             return error.CouldNotFindConversion;
         }
@@ -362,6 +365,93 @@ pub fn bindParams(
                     .prec = 6,
                     .isstr = false,
                 },
+            },
+            .arrow_table => {
+                const atvp_type = c.PyObject_GetAttrString(py_val, "_type") orelse return error.PyErr;
+                defer c.Py_DECREF(atvp_type);
+                const py_name = c.PyObject_GetAttrString(atvp_type, "name") orelse return error.PyErr;
+                defer c.Py_DECREF(py_name);
+                const name = blk: {
+                    var sz: isize = 0;
+                    const name = c.PyUnicode_AsUTF8AndSize(py_name, &sz) orelse return error.PyErr;
+                    break :blk name[0..if (sz < 0) return error.PyErr else @intCast(sz)];
+                };
+
+                // apd.setField(@intCast(i_param + 1), .concise_type, .default) catch return apd.getLastError();
+                // std.debug.print("hey\n", .{});
+                // ipd.setField(@intCast(i_param + 1), .length, name.len) catch return ipd.getLastError();
+                // std.debug.print("hey\n", .{});
+                // ipd.setField(@intCast(i_param + 1), .concise_type, .ss_table) catch return ipd.getLastError();
+                // std.debug.print("hey\n", .{});
+                // var ind: i64 = @intCast(name.len);
+                // apd.setField(@intCast(i_param + 1), .indicator_ptr, @ptrCast(&ind)) catch return apd.getLastError();
+                // std.debug.print("hey\n", .{});
+                // apd.setField(@intCast(i_param + 1), .data_ptr, @constCast(name.ptr)) catch return apd.getLastError();
+                // std.debug.print("hey\n", .{});
+                // ipd.setField(@intCast(i_param + 1), .parameter_type, .input) catch return ipd.getLastError();
+                // std.debug.print("heyend\n", .{});
+
+                std.debug.print("Binding ArrowTVP param {d} with name {s}\n", .{ i_param + 1, name });
+                const name_16 = try std.unicode.wtf8ToWtf16LeAllocZ(allocator, name);
+                defer allocator.free(name_16);
+
+                // std.debug.print("hey\n", .{});
+                var nr_rows: i64 = 1;
+                if (0 != zodbc.c.SQLBindParameter(
+                    stmt.handle(),
+                    @intCast(i_param + 1),
+                    @intFromEnum(zodbc.odbc.attributes.ParameterType.input),
+                    @intFromEnum(zodbc.odbc.types.CDataType.binary),
+                    @intFromEnum(zodbc.odbc.types.SQLDataType.ss_table),
+                    1, // nr_cols
+                    0,
+                    // @ptrCast(@constCast(name_16.ptr)),
+                    // @intCast(name_16.len * 2),
+                    null,
+                    0,
+                    @ptrCast(&nr_rows),
+                )) {
+                    std.debug.print("Error binding tvp\n", .{});
+                    return stmt.getLastError();
+                }
+                // try ipd.setFieldString(@intCast(i_param + 1), .ss_type_name, "test_tabletype");
+                // try ipd.setFieldString(@intCast(i_param + 1), .ss_schema_name, "dbo");
+                // std.debug.print("ParamInfo: {any}\n", .{stmt.describeParam(
+                //     @intCast(i_param + 1),
+                // ) catch return stmt.getLastError()});
+
+                try ipd.setField(@intCast(i_param + 1), .length, 1);
+                try ipd.setField(@intCast(i_param + 1), .precision, 1);
+                // try ipd.setField(@intCast(i_param + 1), ., value: FieldType(field, .imp_param_desc))
+                var idk: [10]u8 = undefined;
+                try apd.setField(@intCast(i_param + 1), .data_ptr, @ptrCast(&idk));
+                std.debug.print("hey2\n", .{});
+
+                // try ipd.setFieldString(@intCast(i_param + 1), .ss_type_name, "test_tabletype");
+                // try ipd.setFieldString(@intCast(i_param + 1), .ss_schema_name, "dbo");
+                // std.debug.print("ParamInfo: {any}\n", .{stmt.describeParam(
+                //     @intCast(i_param + 1),
+                // ) catch return stmt.getLastError()});
+
+                // stmt.setStmtAttr(.ss_param_focus, @intCast(0)) catch return stmt.getLastError();
+                stmt.setStmtAttr(.ss_param_focus, @intCast(i_param + 1)) catch |err| return utils.odbcErrToPy(stmt, "SetStmtAttr", err);
+                // stmt.setStmtAttr(.ss_param_focus, @intCast(i_param + 1)) catch |err| {
+                //     std.debug.print("Error {any} setting ss_param_focus to {}\n", .{ err, i_param + 1 });
+                //     std.debug.print("Focus: {any}\n", .{try stmt.getStmtAttr(.ss_param_focus)});
+                //     return stmt.getLastError();
+                // };
+                std.debug.print("hey3\n", .{});
+
+                apd.setField(@intCast(i_param + 1), .concise_type, .slong) catch return apd.getLastError();
+                ipd.setField(@intCast(i_param + 1), .concise_type, .integer) catch return ipd.getLastError();
+                var ind: i64 = 0;
+                var data = "\x00\x00\x00\x42";
+                apd.setField(@intCast(i_param + 1), .indicator_ptr, @ptrCast(&ind)) catch return apd.getLastError();
+                apd.setField(@intCast(i_param + 1), .data_ptr, @ptrCast(&data)) catch return apd.getLastError();
+                ipd.setField(@intCast(i_param + 1), .parameter_type, .input) catch return ipd.getLastError();
+                std.debug.print("heyend\n", .{});
+
+                continue;
             },
         });
 
