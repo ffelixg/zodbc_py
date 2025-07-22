@@ -92,11 +92,23 @@ pub fn deinitParams(params: *ParamList, allocator: std.mem.Allocator) void {
     params.deinit(allocator);
 }
 
+pub fn ensurePrepared(
+    stmt: zodbc.Statement,
+    prepared: *bool,
+    query: []const u8,
+) !void {
+    if (prepared.*) return;
+    stmt.prepare(query) catch |err| return utils.odbcErrToPy(stmt, "Prepare", err);
+    prepared.* = true;
+}
+
 pub fn bindParams(
     stmt: zodbc.Statement,
     py_params: Obj,
     allocator: std.mem.Allocator,
     py_funcs: PyFuncs,
+    prepared: *bool,
+    query: []const u8,
 ) !ParamList {
     const seq_or_dict: enum { seq, dict } = if (c.PySequence_Check(py_params) == 1) .seq else if (c.PyDict_Check(py_params) == 1) .dict else return py.raise(
         .TypeError,
@@ -139,13 +151,41 @@ pub fn bindParams(
         defer c.Py_DECREF(py_val);
         defer if (py_param_name) |pn| c.Py_DECREF(pn);
 
-        const conv = try Conv.fromValue(py_val, py_funcs);
-
         const is_null = switch (c.Py_IsNone(py_val)) {
             1 => true,
             0 => false,
             else => unreachable,
         };
+
+        if (is_null) {
+            try ensurePrepared(stmt, prepared, query);
+
+            params.appendAssumeCapacity(.{
+                .c_type = undefined,
+                .sql_type = undefined,
+                .data = null,
+                .ind = zodbc.c.SQL_NULL_DATA,
+            });
+
+            const TP = @typeInfo(@typeInfo(@TypeOf(zodbc.Statement.describeParam)).@"fn".return_type.?).error_union.payload;
+            const desc = stmt.describeParam(@intCast(i_param + 1)) catch TP{
+                .length = 0,
+                .nullable = .nullable,
+                .scale = 0,
+                .sql_type = .binary,
+            };
+            ipd.setField(
+                @intCast(i_param + 1),
+                .concise_type,
+                desc.sql_type,
+            ) catch |err| return utils.odbcErrToPy(ipd, "SetDescField", err);
+
+            try ipd.setField(@intCast(i_param + 1), .parameter_type, .input);
+            try apd.setField(@intCast(i_param + 1), .indicator_ptr, @ptrCast(&params.items[i_param].ind));
+
+            continue;
+        }
+        const conv = try Conv.fromValue(py_val, py_funcs);
 
         params.appendAssumeCapacity(switch (conv) {
             .wchar => .{

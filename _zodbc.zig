@@ -1,6 +1,7 @@
 const std = @import("std");
 const py = @import("py");
 const zodbc = @import("zodbc");
+const utils = @import("utils.zig");
 const PyFuncs = @import("PyFuncs.zig");
 const FetchPy = @import("fetch_py.zig");
 const put_py = @import("put_py.zig");
@@ -212,24 +213,37 @@ pub fn execute(cur_obj: Obj, query: []const u8, py_params: Obj) !void {
     const cur = try StmtCapsule.read_capsule(cur_obj);
     if (cur.result_set) |*result_set| {
         try result_set.deinit();
-        try result_set.stmt.stmt.closeCursor();
+        // try cur.stmt.closeCursor();
         cur.result_set = null;
     }
+    // Fixes issue with multiple execute calls without fetches but can error.
+    // Maybe better to discard individual result sets?
+    cur.stmt.closeCursor() catch {};
+
+    var prepared = false;
 
     var params = try put_py.bindParams(
         cur.stmt,
         py_params,
         std.heap.smp_allocator,
         cur.env_con.py_funcs,
+        &prepared,
+        query,
     );
     defer put_py.deinitParams(&params, std.heap.smp_allocator);
     errdefer cur.stmt.free(.reset_params) catch {};
 
-    cur.stmt.execDirect(query) catch |err| switch (err) {
-        error.ExecDirectSuccessWithInfo, error.ExecDirectError => return cur.stmt.getLastError(),
-        error.ExecDirectNoData => {},
-        else => return err,
-    };
+    if (prepared) {
+        cur.stmt.execute() catch |err| switch (err) {
+            error.ExecuteNoData => {},
+            else => return utils.odbcErrToPy(cur.stmt, "Execute", err),
+        };
+    } else {
+        cur.stmt.execDirect(query) catch |err| switch (err) {
+            error.ExecDirectNoData => {},
+            else => return utils.odbcErrToPy(cur.stmt, "ExecDirect", err),
+        };
+    }
     try cur.stmt.free(.reset_params);
 }
 
