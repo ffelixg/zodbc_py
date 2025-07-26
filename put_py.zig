@@ -110,14 +110,18 @@ pub fn bindParams(
     prepared: *bool,
     query: []const u8,
 ) !ParamList {
-    const seq_or_dict: enum { seq, dict } = if (c.PySequence_Check(py_params) == 1) .seq else if (c.PyDict_Check(py_params) == 1) .dict else return py.raise(
-        .TypeError,
-        "Parameters must be a sequence or dict",
-        .{},
-    );
+    const seq_or_dict: enum { seq, dict } = if ( //
+        c.PySequence_Check(py_params) == 1 //
+        and c.PyBytes_Check(py_params) != 1 //
+        and c.PyUnicode_Check(py_params) != 1 //
+        ) .seq else if (c.PyDict_Check(py_params) == 1) .dict else return py.raise(
+            .TypeError,
+            "Parameters must be a sequence or dict",
+            .{},
+        );
     const n_params = std.math.cast(usize, c.PyObject_Length(py_params)) orelse return error.PyErr;
 
-    var params = try ParamList.initCapacity(allocator, n_params);
+    var params: ParamList = try .initCapacity(allocator, n_params);
     errdefer deinitParams(&params, allocator);
 
     if (n_params == 0)
@@ -398,13 +402,8 @@ pub fn bindParams(
             try ipd.setField(@intCast(i_param + 1), .precision, dt_info.prec);
             try ipd.setField(@intCast(i_param + 1), .scale, dt_info.prec);
         } else if (param.c_type == .wchar or param.c_type == .binary or param.c_type == .char) {
-            var len = if (param.data) |buf| buf.len else 0;
-            len = (@divFloor(len, 800) + 1) * 800;
-            if (param.c_type == .wchar) {
-                len = @divExact(len, 2);
-            }
             // send as (n)var..(max) for now
-            len = 0;
+            const len = 0;
             try ipd.setField(@intCast(i_param + 1), .precision, @intCast(len));
             try ipd.setField(@intCast(i_param + 1), .length, @intCast(len));
             try apd.setField(@intCast(i_param + 1), .octet_length_ptr, @ptrCast(&param.ind));

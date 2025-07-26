@@ -127,8 +127,12 @@ pub fn fetch_py(
     var i_row: usize = 0;
     sw: switch (Conversions.Tags.begin_row) {
         .begin_row => {
-            if (try res.borrowRow() == null) {
-                break :sw;
+            {
+                const thread_state = c.PyEval_SaveThread();
+                defer c.PyEval_RestoreThread(thread_state);
+
+                if (try res.borrowRow() == null)
+                    break :sw;
             }
             rows.appendAssumeCapacity(
                 switch (row_type) {

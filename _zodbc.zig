@@ -43,6 +43,7 @@ const Stmt = struct {
     /// Borrowed reference
     env_con: *const EnvCon,
     dt7_fetch: FetchPy.Dt7Fetch,
+    rowcount: i64 = -1,
 
     result_set: ?struct {
         result_set: zodbc.ResultSet,
@@ -52,6 +53,8 @@ const Stmt = struct {
         cache_fetch_py_state: ?FetchPy = null,
 
         fn init(stmt: *const Stmt, allocator: std.mem.Allocator) !@This() {
+            const thread_state = c.PyEval_SaveThread();
+            defer c.PyEval_RestoreThread(thread_state);
             return .{
                 .result_set = try .init(
                     stmt.stmt,
@@ -233,17 +236,34 @@ pub fn execute(cur_obj: Obj, query: []const u8, py_params: Obj) !void {
     defer put_py.deinitParams(&params, std.heap.smp_allocator);
     errdefer cur.stmt.free(.reset_params) catch {};
 
+    var thread_state = c.PyEval_SaveThread();
+    defer if (thread_state) |t_state| c.PyEval_RestoreThread(t_state);
     if (prepared) {
         cur.stmt.execute() catch |err| switch (err) {
             error.ExecuteNoData => {},
-            else => return utils.odbcErrToPy(cur.stmt, "Execute", err),
+            else => {
+                c.PyEval_RestoreThread(thread_state);
+                thread_state = null;
+                return utils.odbcErrToPy(cur.stmt, "Execute", err);
+            },
         };
     } else {
         cur.stmt.execDirect(query) catch |err| switch (err) {
             error.ExecDirectNoData => {},
-            else => return utils.odbcErrToPy(cur.stmt, "ExecDirect", err),
+            else => {
+                c.PyEval_RestoreThread(thread_state);
+                thread_state = null;
+                return utils.odbcErrToPy(cur.stmt, "ExecDirect", err);
+            },
         };
     }
+
+    cur.rowcount = cur.stmt.rowCount() catch |err| {
+        c.PyEval_RestoreThread(thread_state);
+        thread_state = null;
+        return utils.odbcErrToPy(cur.stmt, "RowCount", err);
+    };
+
     try cur.stmt.free(.reset_params);
 }
 
@@ -335,11 +355,15 @@ pub fn getinfo(con: Obj, info_name: []const u8) !Obj {
 
 pub fn commit(con: Obj) !void {
     const env_con = try ConnectionCapsule.read_capsule(con);
+    const thread_state = c.PyEval_SaveThread();
+    defer c.PyEval_RestoreThread(thread_state);
     try env_con.con.endTran(.commit);
 }
 
 pub fn rollback(con: Obj) !void {
     const env_con = try ConnectionCapsule.read_capsule(con);
+    const thread_state = c.PyEval_SaveThread();
+    defer c.PyEval_RestoreThread(thread_state);
     try env_con.con.endTran(.rollback);
 }
 
@@ -349,10 +373,22 @@ pub fn nextset(cur_obj: Obj) !bool {
         try result_set.deinit();
         cur.result_set = null;
     }
+    var thread_state = c.PyEval_SaveThread();
+    defer if (thread_state) |t_state| c.PyEval_RestoreThread(t_state);
     cur.stmt.moreResults() catch |err| switch (err) {
         error.MoreResultsNoData => return false,
-        else => return err,
+        else => {
+            c.PyEval_RestoreThread(thread_state);
+            thread_state = null;
+            return utils.odbcErrToPy(cur.stmt, "MoreResults", err);
+        },
     };
+    cur.rowcount = cur.stmt.rowCount() catch |err| {
+        c.PyEval_RestoreThread(thread_state);
+        thread_state = null;
+        return utils.odbcErrToPy(cur.stmt, "RowCount", err);
+    };
+
     return true;
 }
 
@@ -369,4 +405,16 @@ pub fn con_closed(con: Obj) !bool {
 pub fn cur_deinit(cur: Obj) !void {
     const stmt = try StmtCapsule.read_capsule(cur);
     try stmt.deinit_err();
+}
+
+pub fn rowcount(cur_obj: Obj) !i64 {
+    const cur = try StmtCapsule.read_capsule(cur_obj);
+    return cur.rowcount;
+}
+
+pub fn cancel(cur_obj: Obj) !void {
+    const thread_state = c.PyEval_SaveThread();
+    defer c.PyEval_RestoreThread(thread_state);
+    const cur = try StmtCapsule.read_capsule(cur_obj);
+    try cur.stmt.cancel();
 }

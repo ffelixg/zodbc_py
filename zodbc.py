@@ -34,6 +34,15 @@ class Connection:
     def rollback(self):
         _zodbc.rollback(self._con)
 
+    def __enter__(self) -> "Connection":
+        return self
+    
+    def __exit__(self, exc_type, exc_value, traceback):
+        if exc_type is not None:
+            self.rollback()
+        else:
+            self.commit()
+
     @property
     def closed(self) -> bool:
         if self._con is None:
@@ -130,5 +139,24 @@ class Cursor:
         else:
             raise StopIteration
 
+    def __enter__(self) -> "Cursor":
+        return self
+    
+    def __exit__(self, exc_type, exc_value, traceback):
+        self.close()
+
     def nextset(self) -> bool:
         return _zodbc.nextset(self._cursor)
+
+    def cancel(self) -> None:
+        """
+        Cancel the current operation.
+        """
+        _zodbc.cancel(self._cursor)
+
+    @property
+    def rowcount(self) -> int:
+        """
+        Return the number of rows affected by the last operation.
+        """
+        return _zodbc.rowcount(self._cursor)
