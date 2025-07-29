@@ -1,35 +1,58 @@
-const zodbc_test = @import("zodbc_test");
-const zodbc = zodbc_test.zodbc;
-const State = zodbc_test.State;
-const fetch_arrow = zodbc_test.fetch_arrow;
-const arrow = zodbc_test.arrow;
+const std = @import("std");
+pub const ally = std.heap.raw_c_allocator;
 
-const SchemaCapsule = py.PyCapsule(arrow.ArrowSchema, "arrow_schema", &struct {
-    fn deinit(self: *arrow.ArrowSchema) callconv(.c) void {
-        if (self.release) |release|
-            release(self);
+pub const ArrowSchema = extern struct {
+    // Array type description
+    format: [*:0]const u8,
+    name: ?[*:0]const u8,
+    metadata: ?[*]const u8 = null,
+    flags: i64 = 0,
+    n_children: i64 = 0,
+    children: ?[*]*ArrowSchema = null,
+    dictionary: ?[*]ArrowSchema = null,
+
+    // Release callback
+    release: ?*const fn (*ArrowSchema) callconv(.c) void,
+    // Opaque producer-specific data
+    private_data: ?*anyopaque = null,
+};
+
+/// I think this the way this function looks is mostly forced by the "buffer moving" property.
+pub fn array_release(arrow_array: *ArrowArray) callconv(.c) void {
+    var buffers_freed: usize = 0;
+    const buf_s = arrow_array.buffers[0..3];
+    for (buf_s) |buf| {
+        if (buf) |b| {
+            std.c.free(@ptrCast(b));
+            buffers_freed += 1;
+        }
     }
-}.deinit);
-const ArrayCapsule = py.PyCapsule(arrow.ArrowArray, "arrow_array", &struct {
-    fn deinit(self: *arrow.ArrowArray) callconv(.c) void {
-        if (self.release) |release|
-            release(self);
-    }
-}.deinit);
+    std.debug.assert(buffers_freed == arrow_array.n_buffers);
+    ally.free(buf_s);
 
-pub fn arrow_batch(cur_obj: Obj, n_rows: usize) !struct { Obj, Obj } {
-    const cur = try StmtCapsule.read_capsule(cur_obj);
-    if (cur.result_set == null) {
-        cur.result_set = try .init(cur.stmt, std.heap.c_allocator);
+    if (arrow_array.children) |children| {
+        for (children[0..@intCast(arrow_array.n_children)]) |child| {
+            child.release.?(child);
+            ally.destroy(child);
+        }
     }
 
-    const schema, const array = try fetch_arrow.fetch_arrow_chunk(
-        &cur.result_set.?,
-        n_rows,
-    );
-
-    return .{
-        try SchemaCapsule.create_capsule(schema),
-        try ArrayCapsule.create_capsule(array),
-    };
+    arrow_array.release = null;
 }
+
+pub const ArrowArray = extern struct {
+    // Array data description
+    length: i64,
+    null_count: i64,
+    offset: i64 = 0,
+    n_buffers: i64,
+    n_children: i64 = 0,
+    buffers: [*]?[*]u8,
+    children: ?[*]*ArrowArray = null,
+    dictionary: ?[*]ArrowArray = null,
+
+    // Release callback
+    release: ?*const fn (*ArrowArray) callconv(.c) void = array_release,
+    // Opaque producer-specific data, must be pointer sized
+    private_data: ?*anyopaque = null,
+};

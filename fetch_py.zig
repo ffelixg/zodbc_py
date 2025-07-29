@@ -5,7 +5,9 @@ const c = py.py;
 const Obj = *c.PyObject;
 const PyFuncs = @import("PyFuncs.zig");
 const fmt = @import("fmt.zig");
-const pyCall = @import("utils.zig").pyCall;
+const utils = @import("utils.zig");
+const pyCall = utils.pyCall;
+const Dt7Fetch = utils.Dt7Fetch;
 
 const CDataType = zodbc.odbc.types.CDataType;
 
@@ -50,8 +52,6 @@ const Conversions = union(enum) {
 };
 
 cycle: []Conversions.Tags,
-
-pub const Dt7Fetch = enum(u4) { micro = 1, string = 2, nano = 3 };
 
 pub fn init(res: *zodbc.ResultSet, allocator: std.mem.Allocator, dt7_fetch: Dt7Fetch) !@This() {
     const cycle = try allocator.alloc(Conversions.Tags, res.n_cols + 1);

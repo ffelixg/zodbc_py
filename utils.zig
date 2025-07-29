@@ -69,3 +69,5 @@ pub fn odbcErrToPy(has_handle: anytype, comptime name: []const u8, err: anytype)
         },
     }
 }
+
+pub const Dt7Fetch = enum(u4) { micro = 1, string = 2, nano = 3 };

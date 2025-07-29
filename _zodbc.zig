@@ -6,6 +6,8 @@ const PyFuncs = @import("PyFuncs.zig");
 const FetchPy = @import("fetch_py.zig");
 const put_py = @import("put_py.zig");
 const fetch_py = FetchPy.fetch_py;
+const FetchArrow = @import("fetch_arrow.zig");
+const arrow = @import("arrow.zig");
 const c = py.py;
 const Obj = *c.PyObject;
 
@@ -42,7 +44,7 @@ const Stmt = struct {
     env_con_caps: Obj,
     /// Borrowed reference
     env_con: *const EnvCon,
-    dt7_fetch: FetchPy.Dt7Fetch,
+    dt7_fetch: utils.Dt7Fetch,
     rowcount: i64 = -1,
 
     result_set: ?struct {
@@ -51,6 +53,7 @@ const Stmt = struct {
         cache_column_names: ?std.ArrayListUnmanaged([:0]const u8) = null,
         cache_tuple_type: ?*c.PyTypeObject = null,
         cache_fetch_py_state: ?FetchPy = null,
+        cache_fetch_arrow_state: ?FetchArrow = null,
 
         fn init(stmt: *const Stmt, allocator: std.mem.Allocator) !@This() {
             const thread_state = c.PyEval_SaveThread();
@@ -76,6 +79,9 @@ const Stmt = struct {
             }
             if (self.cache_fetch_py_state) |fp| {
                 fp.deinit(std.heap.smp_allocator);
+            }
+            if (self.cache_fetch_arrow_state) |fa| {
+                fa.deinit(std.heap.smp_allocator);
             }
             try self.result_set.deinit();
         }
@@ -144,6 +150,20 @@ const Stmt = struct {
             self.cache_fetch_py_state = fp;
             return fp;
         }
+
+        pub fn fetchArrowState(self: *@This()) !FetchArrow {
+            // TODO error when switching between fetch py/arrow?
+            if (self.cache_fetch_arrow_state) |fa| {
+                return fa;
+            }
+            const fa = try FetchArrow.init(
+                &self.result_set,
+                std.heap.smp_allocator,
+                self.stmt.dt7_fetch,
+            );
+            self.cache_fetch_arrow_state = fa;
+            return fa;
+        }
     } = null,
 
     fn deinit(self: *Stmt) callconv(.c) void {
@@ -200,7 +220,7 @@ pub fn getAutocommit(con: Obj) !bool {
     };
 }
 
-pub fn cursor(con: Obj, datetime2_7_fetch: FetchPy.Dt7Fetch) !Obj {
+pub fn cursor(con: Obj, datetime2_7_fetch: utils.Dt7Fetch) !Obj {
     const env_con = try ConnectionCapsule.read_capsule(con);
     const stmt = try zodbc.Statement.init(env_con.con);
     errdefer stmt.deinit() catch {};
@@ -417,4 +437,39 @@ pub fn cancel(cur_obj: Obj) !void {
     defer c.PyEval_RestoreThread(thread_state);
     const cur = try StmtCapsule.read_capsule(cur_obj);
     try cur.stmt.cancel();
+}
+
+const SchemaCapsule = py.PyCapsule(arrow.ArrowSchema, "arrow_schema", &struct {
+    fn deinit(self: *arrow.ArrowSchema) callconv(.c) void {
+        _ = self;
+        // if (self.release) |release|
+        //     release(self);
+    }
+}.deinit);
+const ArrayCapsule = py.PyCapsule(arrow.ArrowArray, "arrow_array", &struct {
+    fn deinit(self: *arrow.ArrowArray) callconv(.c) void {
+        _ = self;
+        // if (self.release) |release|
+        //     release(self);
+    }
+}.deinit);
+
+pub fn arrow_batch(cur_obj: Obj, n_rows: usize) !struct { Obj, Obj } {
+    const cur = try StmtCapsule.read_capsule(cur_obj);
+    if (cur.result_set == null) {
+        cur.result_set = try .init(cur, arrow.ally);
+    }
+
+    const fetch_arrow = try cur.result_set.?.fetchArrowState();
+
+    const schema, const array = try fetch_arrow.fetch_batch(
+        &cur.result_set.?.result_set,
+        arrow.ally,
+        n_rows,
+    );
+
+    return .{
+        try SchemaCapsule.create_capsule(schema),
+        try ArrayCapsule.create_capsule(array),
+    };
 }
