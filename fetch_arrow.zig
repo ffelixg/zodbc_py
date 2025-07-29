@@ -12,118 +12,99 @@ const arrow = @import("arrow.zig");
 
 const CDataType = zodbc.odbc.types.CDataType;
 
-const Conversions = union(enum) {
-    begin_row: void,
-    end_row: void,
+const Conversions = enum {
+    begin_row,
+    end_row,
 
-    wchar: CDataType.wchar.Type(),
-    sshort: CDataType.sshort.Type(),
-    ushort: CDataType.ushort.Type(),
-    slong: CDataType.slong.Type(),
-    ulong: CDataType.ulong.Type(),
-    float: CDataType.float.Type(),
-    double: CDataType.double.Type(),
-    bit: CDataType.bit.Type(),
-    stinyint: CDataType.stinyint.Type(),
-    utinyint: CDataType.utinyint.Type(),
-    sbigint: CDataType.sbigint.Type(),
-    ubigint: CDataType.ubigint.Type(),
-    binary: CDataType.binary.Type(),
-    numeric: CDataType.numeric.Type(), // TODO maybe implement different bit widths?
-    guid: CDataType.guid.Type(),
-    type_date: CDataType.type_date.Type(),
-    type_time: CDataType.type_time.Type(),
-    type_timestamp_second: CDataType.type_timestamp.Type(),
-    type_timestamp_milli: CDataType.type_timestamp.Type(),
-    type_timestamp_micro: CDataType.type_timestamp.Type(),
-    type_timestamp_nano: CDataType.type_timestamp.Type(),
-    type_timestamp_string: CDataType.type_timestamp.Type(),
-    ss_timestampoffset_second: CDataType.ss_timestampoffset.Type(),
-    ss_timestampoffset_milli: CDataType.ss_timestampoffset.Type(),
-    ss_timestampoffset_micro: CDataType.ss_timestampoffset.Type(),
-    ss_timestampoffset_nano: CDataType.ss_timestampoffset.Type(),
-    ss_timestampoffset_string: CDataType.ss_timestampoffset.Type(),
-    ss_time2_second: CDataType.ss_time2.Type(),
-    ss_time2_milli: CDataType.ss_time2.Type(),
-    ss_time2_micro: CDataType.ss_time2.Type(),
-    ss_time2_nano: CDataType.ss_time2.Type(),
+    wchar,
+    sshort,
+    ushort,
+    slong,
+    ulong,
+    float,
+    double,
+    bit,
+    stinyint,
+    utinyint,
+    sbigint,
+    ubigint,
+    binary,
+    numeric,
+    guid,
+    type_date,
+    type_time,
+    type_timestamp__second,
+    type_timestamp__milli,
+    type_timestamp__micro,
+    type_timestamp__nano,
+    type_timestamp__string,
+    ss_timestampoffset__second,
+    ss_timestampoffset__milli,
+    ss_timestampoffset__micro,
+    ss_timestampoffset__nano,
+    ss_timestampoffset__string,
+    ss_time2__second,
+    ss_time2__milli,
+    ss_time2__micro,
+    ss_time2__nano,
 
-    const Tags = @typeInfo(@This()).@"union".tag_type.?;
-
-    fn Type(tag: Tags) type {
-        return @FieldType(@This(), @tagName(tag));
-    }
-
-    fn ArrowType(tag: Tags) type {
+    fn ArrowType(tag: Conversions) type {
         return switch (tag) {
             .wchar => u32,
-            .sshort => Conversions.Type(tag),
-            .ushort => Conversions.Type(tag),
-            .slong => Conversions.Type(tag),
-            .ulong => Conversions.Type(tag),
-            .float => Conversions.Type(tag),
-            .double => Conversions.Type(tag),
+            .sshort => tag.Type(),
+            .ushort => tag.Type(),
+            .slong => tag.Type(),
+            .ulong => tag.Type(),
+            .float => tag.Type(),
+            .double => tag.Type(),
             .bit => std.DynamicBitSetUnmanaged.MaskInt,
-            .stinyint => Conversions.Type(tag),
-            .utinyint => Conversions.Type(tag),
-            .sbigint => Conversions.Type(tag),
-            .ubigint => Conversions.Type(tag),
+            .stinyint => tag.Type(),
+            .utinyint => tag.Type(),
+            .sbigint => tag.Type(),
+            .ubigint => tag.Type(),
             .binary => u32,
             .numeric => i128,
-            .guid => Conversions.Type(tag),
+            .guid => tag.Type(),
             .type_date => i32,
             .type_time => i32,
-            .type_timestamp_second => i64,
-            .type_timestamp_milli => i64,
-            .type_timestamp_micro => i64,
-            .type_timestamp_nano => i64,
-            .type_timestamp_string => u32,
-            .ss_timestampoffset_second => i64,
-            .ss_timestampoffset_milli => i64,
-            .ss_timestampoffset_nano => i64,
-            .ss_timestampoffset_micro => i64,
-            .ss_timestampoffset_string => u32,
-            .ss_time2_second => i32,
-            .ss_time2_milli => i32,
-            .ss_time2_micro => i64,
-            .ss_time2_nano => i64,
+            .type_timestamp__second => i64,
+            .type_timestamp__milli => i64,
+            .type_timestamp__micro => i64,
+            .type_timestamp__nano => i64,
+            .type_timestamp__string => u32,
+            .ss_timestampoffset__second => i64,
+            .ss_timestampoffset__milli => i64,
+            .ss_timestampoffset__nano => i64,
+            .ss_timestampoffset__micro => i64,
+            .ss_timestampoffset__string => u32,
+            .ss_time2__second => i32,
+            .ss_time2__milli => i32,
+            .ss_time2__micro => i64,
+            .ss_time2__nano => i64,
             .begin_row, .end_row => unreachable,
         };
     }
 
-    fn isVarArrow(tag: Tags) bool {
+    fn isVarArrow(tag: Conversions) bool {
         return switch (tag) {
-            .wchar, .binary, .ss_timestampoffset_string, .type_timestamp_string => true,
+            .wchar, .binary, .ss_timestampoffset__string, .type_timestamp__string => true,
             else => false,
         };
     }
 
-    fn asTypeValue(comptime tag: Tags, data: []u8) Type(tag) {
+    fn asTypeValue(comptime tag: Conversions, data: []u8) Type(tag) {
         return std.mem.bytesToValue(Type(tag), data);
     }
-};
 
-comptime {
-    @setEvalBranchQuota(0xFFFF_FFFF);
-    for (std.enums.values(Conversions.Tags)) |tag| {
-        var found_match = false;
-        for (std.enums.values(zodbc.odbc.types.CDataType)) |c_type| {
-            const tagn = @tagName(tag);
-            const ctn = @tagName(c_type);
-            if (std.mem.eql(u8, tagn, ctn)) {
-                found_match = true;
-                std.debug.assert(c_type.Type() == Conversions.Type(tag));
-            }
-            if (tagn.len >= ctn.len and tagn[ctn.len] == '_' and std.mem.eql(u8, tagn[0..ctn.len], ctn)) {
-                found_match = true;
-                std.debug.assert(c_type.Type() == Conversions.Type(tag));
-            }
+    fn Type(comptime tag: Conversions) type {
+        @setEvalBranchQuota(0xFFFF_FFFF);
+        if (tag == .begin_row or tag == .end_row) {
+            return void;
         }
-        if (!found_match and tag != .begin_row and tag != .end_row) {
-            @compileError("Conversion " ++ @tagName(tag) ++ " does not match any CDataType");
-        }
+        var tok = std.mem.tokenizeSequence(u8, @tagName(tag), "__");
+        return std.enums.nameCast(zodbc.odbc.types.CDataType, tok.next().?).Type();
     }
-}
+};
 
 const Schema = struct {
     name: []const u8,
@@ -182,7 +163,7 @@ const Array = struct {
     data_current: usize = 0,
     value: []u8,
     valid_mem: []std.DynamicBitSetUnmanaged.MaskInt,
-    tag: Conversions.Tags,
+    tag: Conversions,
     ownership_stolen: bool = false,
     n_rows_max: usize,
 
@@ -190,7 +171,7 @@ const Array = struct {
         return .{ .bit_length = self.n_rows_max, .masks = self.valid_mem.ptr };
     }
 
-    fn init(n_rows: usize, tag: Conversions.Tags, allocator: std.mem.Allocator) !@This() {
+    fn init(n_rows: usize, tag: Conversions, allocator: std.mem.Allocator) !@This() {
         const valid_mem = try allocator.alloc(std.DynamicBitSetUnmanaged.MaskInt, bitSetLen(n_rows));
         errdefer allocator.free(valid_mem);
         @memset(valid_mem, 0);
@@ -198,8 +179,8 @@ const Array = struct {
         switch (tag) {
             .begin_row, .end_row => unreachable,
             inline else => |comp_tag| {
-                const T = Conversions.ArrowType(comp_tag);
-                if (comptime Conversions.isVarArrow(comp_tag)) {
+                const T = comp_tag.ArrowType();
+                if (comptime comp_tag.isVarArrow()) {
                     comptime std.debug.assert(T == u32);
                     const value = try allocator.alloc(T, n_rows + 1);
                     errdefer allocator.free(value);
@@ -250,7 +231,7 @@ const Array = struct {
         switch (self.tag) {
             .begin_row, .end_row => unreachable,
             inline else => |comp_tag| {
-                allocator.free(@as([]Conversions.ArrowType(comp_tag), @ptrCast(@alignCast(self.value))));
+                allocator.free(@as([]comp_tag.ArrowType(), @ptrCast(@alignCast(self.value))));
             },
         }
     }
@@ -279,7 +260,7 @@ const Array = struct {
     }
 };
 
-cycle: []Conversions.Tags,
+cycle: []Conversions,
 cols: []Schema,
 
 pub fn init(res: *const zodbc.ResultSet, allocator: std.mem.Allocator, dt7_fetch: Dt7Fetch) !@This() {
@@ -287,12 +268,12 @@ pub fn init(res: *const zodbc.ResultSet, allocator: std.mem.Allocator, dt7_fetch
     defer cols.deinit(allocator);
     defer for (cols.items) |col| col.deinit(allocator);
 
-    const cycle = try allocator.alloc(Conversions.Tags, res.n_cols + 1);
+    const cycle = try allocator.alloc(Conversions, res.n_cols + 1);
     errdefer allocator.free(cycle);
     for (res.columns.items, 0..) |col, i_col| {
         cycle[i_col] = switch (col.c_type) {
             inline else => |c_type| blk_outer: {
-                const tag: Conversions.Tags, const fmt_raw = switch (c_type) {
+                const tag: Conversions, const fmt_raw = switch (c_type) {
                     .wchar => .{ .wchar, "u" },
                     .sshort => .{ .sshort, "s" },
                     .ushort => .{ .ushort, "S" },
@@ -314,16 +295,16 @@ pub fn init(res: *const zodbc.ResultSet, allocator: std.mem.Allocator, dt7_fetch
                         const prec = try res.stmt.colAttribute(@intCast(i_col + 1), .precision);
                         std.debug.assert(prec >= 0);
                         if (prec == 0) {
-                            break :blk .{ .type_timestamp_second, "tss" };
+                            break :blk .{ .type_timestamp__second, "tss" };
                         } else if (prec <= 3) {
-                            break :blk .{ .type_timestamp_milli, "tsm" };
+                            break :blk .{ .type_timestamp__milli, "tsm" };
                         } else if (prec <= 6) {
-                            break :blk .{ .type_timestamp_micro, "tsu" };
+                            break :blk .{ .type_timestamp__micro, "tsu" };
                         } else if (prec <= 9) {
                             switch (dt7_fetch) {
-                                .micro => break :blk .{ .type_timestamp_micro, "tsu" },
-                                .nano => break :blk .{ .type_timestamp_nano, "tsn" },
-                                .string => break :blk .{ .type_timestamp_string, "u" },
+                                .micro => break :blk .{ .type_timestamp__micro, "tsu" },
+                                .nano => break :blk .{ .type_timestamp__nano, "tsn" },
+                                .string => break :blk .{ .type_timestamp__string, "u" },
                             }
                         } else {
                             unreachable;
@@ -333,16 +314,16 @@ pub fn init(res: *const zodbc.ResultSet, allocator: std.mem.Allocator, dt7_fetch
                         const prec = try res.stmt.colAttribute(@intCast(i_col + 1), .precision);
                         std.debug.assert(prec >= 0);
                         if (prec == 0) {
-                            break :blk .{ .ss_timestampoffset_second, "tss:+00:00" };
+                            break :blk .{ .ss_timestampoffset__second, "tss:+00:00" };
                         } else if (prec <= 3) {
-                            break :blk .{ .ss_timestampoffset_milli, "tsm:+00:00" };
+                            break :blk .{ .ss_timestampoffset__milli, "tsm:+00:00" };
                         } else if (prec <= 6) {
-                            break :blk .{ .ss_timestampoffset_micro, "tsu:+00:00" };
+                            break :blk .{ .ss_timestampoffset__micro, "tsu:+00:00" };
                         } else if (prec <= 9) {
                             switch (dt7_fetch) {
-                                .micro => break :blk .{ .ss_timestampoffset_micro, "tsu:+00:00" },
-                                .nano => break :blk .{ .ss_timestampoffset_nano, "tsn:+00:00" },
-                                .string => break :blk .{ .ss_timestampoffset_string, "u" },
+                                .micro => break :blk .{ .ss_timestampoffset__micro, "tsu:+00:00" },
+                                .nano => break :blk .{ .ss_timestampoffset__nano, "tsn:+00:00" },
+                                .string => break :blk .{ .ss_timestampoffset__string, "u" },
                             }
                         } else {
                             unreachable;
@@ -352,13 +333,13 @@ pub fn init(res: *const zodbc.ResultSet, allocator: std.mem.Allocator, dt7_fetch
                         const prec = try res.stmt.colAttribute(@intCast(i_col + 1), .precision);
                         std.debug.assert(prec >= 0);
                         if (prec == 0) {
-                            break :blk .{ .ss_time2_second, "tts" };
+                            break :blk .{ .ss_time2__second, "tts" };
                         } else if (prec <= 3) {
-                            break :blk .{ .ss_time2_milli, "ttm" };
+                            break :blk .{ .ss_time2__milli, "ttm" };
                         } else if (prec <= 6) {
-                            break :blk .{ .ss_time2_micro, "ttu" };
+                            break :blk .{ .ss_time2__micro, "ttu" };
                         } else if (prec <= 9) {
-                            break :blk .{ .ss_time2_nano, "ttn" };
+                            break :blk .{ .ss_time2__nano, "ttn" };
                         } else {
                             unreachable;
                         }
@@ -373,15 +354,15 @@ pub fn init(res: *const zodbc.ResultSet, allocator: std.mem.Allocator, dt7_fetch
                     //         else => unreachable,
                     //     };
                     //     switch (prec) {
-                    //         inline 0 => break :blk .{ std.meta.stringToEnum(Conversions.Tags, @tagName(c_type) ++ "_second"), prefix ++ "s" ++ suffix },
+                    //         inline 0 => break :blk .{ std.meta.stringToEnum(Conversions, @tagName(c_type) ++ "_second"), prefix ++ "s" ++ suffix },
                     //         inline 7...9 => blk: {
                     //             if (c_type == .ss_time2) {
-                    //                 break :blk .{ std.meta.stringToEnum(Conversions.Tags, @tagName(c_type) ++ "_nano"), prefix ++ "n" ++ suffix };
+                    //                 break :blk .{ std.meta.stringToEnum(Conversions, @tagName(c_type) ++ "_nano"), prefix ++ "n" ++ suffix };
                     //             }
                     //             switch (dt7_fetch) {
-                    //                 .micro => break :blk .{ std.meta.stringToEnum(Conversions.Tags, @tagName(c_type) ++ "_micro"), prefix ++ "u" ++ suffix },
-                    //                 .nano => break :blk .{ std.meta.stringToEnum(Conversions.Tags, @tagName(c_type) ++ "_nano"), prefix ++ "n" ++ suffix },
-                    //                 .string => break :blk .{ std.meta.stringToEnum(Conversions.Tags, @tagName(c_type) ++ "_string"), "u" },
+                    //                 .micro => break :blk .{ std.meta.stringToEnum(Conversions, @tagName(c_type) ++ "_micro"), prefix ++ "u" ++ suffix },
+                    //                 .nano => break :blk .{ std.meta.stringToEnum(Conversions, @tagName(c_type) ++ "_nano"), prefix ++ "n" ++ suffix },
+                    //                 .string => break :blk .{ std.meta.stringToEnum(Conversions, @tagName(c_type) ++ "_string"), "u" },
                     //             }
                     //         },
                     //     }
@@ -437,7 +418,7 @@ pub fn fetch_batch(
     _ = &thread_state;
     var i_col: usize = 0;
     var i_row: usize = 0;
-    sw: switch (Conversions.Tags.begin_row) {
+    sw: switch (Conversions.begin_row) {
         .begin_row => {
             if (try res.borrowRow() == null)
                 break :sw;
@@ -454,11 +435,11 @@ pub fn fetch_batch(
         },
         inline else => |conv| {
             const arr = &arrays.items[i_col];
-            const values: []Conversions.ArrowType(conv) = @ptrCast(@alignCast(arr.value));
+            const values: []conv.ArrowType() = @ptrCast(@alignCast(arr.value));
             if (res.borrowed_row[i_col]) |bytes| {
                 var valid = arr.valid();
                 valid.set(i_row);
-                if (comptime Conversions.isVarArrow(conv)) {
+                if (comptime conv.isVarArrow()) {
                     try odbcToArrowVar(
                         bytes,
                         values,
@@ -472,7 +453,7 @@ pub fn fetch_batch(
             } else {
                 var valid = arr.valid();
                 valid.unset(i_row);
-                if (Conversions.isVarArrow(conv)) {
+                if (conv.isVarArrow()) {
                     values[i_row + 1] = values[i_row];
                 }
             }
@@ -496,7 +477,7 @@ inline fn odbcToArrowVar(
     bytes: []u8,
     values: []u32,
     i_row: usize,
-    comptime conv: Conversions.Tags,
+    comptime conv: Conversions,
     arr: *Array,
 ) !void {
     var data = arr.data.?;
@@ -509,7 +490,7 @@ inline fn odbcToArrowVar(
         arr.data = data;
     }
 
-    const bytes_T: []Conversions.Type(conv) = @ptrCast(@alignCast(bytes));
+    const bytes_T: []conv.Type() = @ptrCast(@alignCast(bytes));
     switch (conv) {
         .binary => {
             @memcpy(data[values[i_row] .. values[i_row] + bytes_T.len], bytes_T);
@@ -519,7 +500,7 @@ inline fn odbcToArrowVar(
             const len = std.unicode.wtf16LeToWtf8(data[values[i_row]..], bytes_T);
             values[i_row + 1] = values[i_row] + @as(u32, @intCast(len));
         },
-        .ss_timestampoffset_string, .type_timestamp_string => {
+        .ss_timestampoffset__string, .type_timestamp__string => {
             @panic("TODO");
         },
         else => @compileError(@tagName(conv) ++ " is not a variable length type"),
@@ -528,9 +509,9 @@ inline fn odbcToArrowVar(
 
 inline fn odbcToArrowScalar(
     bytes: []u8,
-    comptime conv: Conversions.Tags,
-) !Conversions.ArrowType(conv) {
-    const val = Conversions.asTypeValue(conv, bytes);
+    comptime conv: Conversions,
+) !conv.ArrowType() {
+    const val = conv.asTypeValue(bytes);
 
     _ = val;
     std.debug.print("conv: {s}\n", .{@tagName(conv)});
