@@ -9,6 +9,7 @@ const utils = @import("utils.zig");
 const pyCall = utils.pyCall;
 const Dt7Fetch = utils.Dt7Fetch;
 const arrow = @import("arrow.zig");
+const zeit = @import("zeit");
 
 const CDataType = zodbc.odbc.types.CDataType;
 
@@ -245,7 +246,6 @@ const Array = struct {
         buffers[1] = self.value.ptr;
         if (self.data) |data| {
             buffers[2] = data.ptr;
-            std.debug.print("data ptr: {*}\n", .{data.ptr});
         } else {
             buffers[2] = null;
         }
@@ -295,15 +295,15 @@ pub fn init(res: *const zodbc.ResultSet, allocator: std.mem.Allocator, dt7_fetch
                         const prec = try res.stmt.colAttribute(@intCast(i_col + 1), .precision);
                         std.debug.assert(prec >= 0);
                         if (prec == 0) {
-                            break :blk .{ .type_timestamp__second, "tss" };
+                            break :blk .{ .type_timestamp__second, "tss:" };
                         } else if (prec <= 3) {
-                            break :blk .{ .type_timestamp__milli, "tsm" };
+                            break :blk .{ .type_timestamp__milli, "tsm:" };
                         } else if (prec <= 6) {
-                            break :blk .{ .type_timestamp__micro, "tsu" };
+                            break :blk .{ .type_timestamp__micro, "tsu:" };
                         } else if (prec <= 9) {
                             switch (dt7_fetch) {
-                                .micro => break :blk .{ .type_timestamp__micro, "tsu" },
-                                .nano => break :blk .{ .type_timestamp__nano, "tsn" },
+                                .micro => break :blk .{ .type_timestamp__micro, "tsu:" },
+                                .nano => break :blk .{ .type_timestamp__nano, "tsn:" },
                                 .string => break :blk .{ .type_timestamp__string, "u" },
                             }
                         } else {
@@ -468,8 +468,6 @@ pub fn fetch_batch(
     const batch_array = try produceBatchArray(arrays.items, i_row);
     errdefer batch_array.release.?(batch_array);
 
-    std.debug.print("{any}\n", .{@as([]u32, @ptrCast(@alignCast(batch_array.children.?[0].buffers[1].?[0 .. 4 * 3])))});
-
     return .{ batch_schema, batch_array };
 }
 
@@ -513,9 +511,91 @@ inline fn odbcToArrowScalar(
 ) !conv.ArrowType() {
     const val = conv.asTypeValue(bytes);
 
-    _ = val;
-    std.debug.print("conv: {s}\n", .{@tagName(conv)});
-    return error.TODO;
+    switch (conv) {
+        .sshort,
+        .ushort,
+        .slong,
+        .ulong,
+        .float,
+        .double,
+        .stinyint,
+        .utinyint,
+        .sbigint,
+        .ubigint,
+        => return val,
+        .bit => @panic("TODO put this somewhere else"),
+        .numeric => return @as(i128, @bitCast(val.val)) * switch (val.sign) {
+            1 => @as(i2, 1),
+            0 => @as(i2, -1),
+            else => unreachable,
+        },
+        .guid => return @bitCast(val),
+        .type_date,
+        .type_time,
+        .type_timestamp__second,
+        .type_timestamp__milli,
+        .type_timestamp__micro,
+        .type_timestamp__nano,
+        .ss_timestampoffset__second,
+        .ss_timestampoffset__milli,
+        .ss_timestampoffset__micro,
+        .ss_timestampoffset__nano,
+        .ss_time2__second,
+        .ss_time2__milli,
+        .ss_time2__micro,
+        .ss_time2__nano,
+        => {
+            const T = conv.Type();
+            const prec_mult = comptime blk: {
+                var tok = std.mem.tokenizeSequence(u8, @tagName(conv), "__");
+                _ = tok.next().?;
+                const prec_name = tok.next();
+                if (prec_name) |n|
+                    if (std.mem.eql(u8, n, "second"))
+                        break :blk 9
+                    else if (std.mem.eql(u8, n, "milli"))
+                        break :blk 6
+                    else if (std.mem.eql(u8, n, "micro"))
+                        break :blk 3
+                    else if (std.mem.eql(u8, n, "nano"))
+                        break :blk 0
+                    else
+                        @compileError("Unknown precision name: " ++ n)
+                else
+                    break :blk null;
+            };
+            const A = conv.ArrowType();
+            var arrow_val: A = 0;
+            if (@hasField(T, "year")) {
+                arrow_val += @intCast(zeit.daysFromCivil(.{
+                    .year = @intCast(val.year),
+                    .month = @enumFromInt(val.month),
+                    .day = @intCast(val.day),
+                }));
+            }
+            if (@hasField(T, "hour")) {
+                arrow_val *= 24 * 3600;
+                arrow_val += (0 +
+                    @as(A, val.hour) * 3600 +
+                    @as(A, val.minute) * 60 +
+                    @as(A, val.second));
+            }
+            if (@hasField(T, "timezone_hour")) {
+                arrow_val -= @as(A, val.timezone_hour) * 3600;
+                arrow_val -= @as(A, val.timezone_minute) * 60;
+            }
+            if (@hasField(T, "fraction")) {
+                // TODO handle overflow with __nano types gracefully
+                arrow_val *= std.math.pow(A, 10, 9 - prec_mult);
+                arrow_val += @as(A, @divTrunc(
+                    @as(A, @intCast(val.fraction)),
+                    std.math.pow(A, 10, prec_mult),
+                ));
+            }
+            return arrow_val;
+        },
+        else => @compileError("Conversion " ++ @tagName(conv) ++ " is not a scalar type"),
+    }
 }
 
 /// Clones the Schemas
