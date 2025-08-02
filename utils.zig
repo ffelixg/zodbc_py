@@ -34,7 +34,14 @@ pub inline fn attrsToStruct(comptime T: type, obj: Obj) !T {
     return result;
 }
 
-pub fn odbcErrToPy(has_handle: anytype, comptime name: []const u8, err: anytype) error{PyErr} {
+pub fn odbcErrToPy(has_handle: anytype, comptime name: []const u8, err: anytype, thread_state_ptr: ?*?*c.PyThreadState) error{PyErr} {
+    if (thread_state_ptr) |thread_state| {
+        if (thread_state.*) |ts| {
+            c.PyEval_RestoreThread(ts);
+            thread_state.* = null;
+        }
+    }
+
     switch (err) {
         inline else => |e| {
             const err_name = @errorName(e);

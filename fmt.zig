@@ -174,9 +174,6 @@ pub inline fn parseDecimal(dec: []const u8) !zodbc.c.SQL_NUMERIC_STRUCT {
         scale,
         std.math.log10(value) + 1,
     ));
-    std.debug.print("dec: {s}, value: {}, scale: {}, precision: {}\n", .{
-        dec, value, scale, precision,
-    });
     return .{
         .val = @bitCast(value),
         .sign = sign,

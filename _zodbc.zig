@@ -261,28 +261,17 @@ pub fn execute(cur_obj: Obj, query: []const u8, py_params: Obj) !void {
     if (prepared) {
         cur.stmt.execute() catch |err| switch (err) {
             error.ExecuteNoData => {},
-            else => {
-                c.PyEval_RestoreThread(thread_state);
-                thread_state = null;
-                return utils.odbcErrToPy(cur.stmt, "Execute", err);
-            },
+            else => return utils.odbcErrToPy(cur.stmt, "Execute", err, &thread_state),
         };
     } else {
         cur.stmt.execDirect(query) catch |err| switch (err) {
             error.ExecDirectNoData => {},
-            else => {
-                c.PyEval_RestoreThread(thread_state);
-                thread_state = null;
-                return utils.odbcErrToPy(cur.stmt, "ExecDirect", err);
-            },
+            else => return utils.odbcErrToPy(cur.stmt, "ExecDirect", err, &thread_state),
         };
     }
 
-    cur.rowcount = cur.stmt.rowCount() catch |err| {
-        c.PyEval_RestoreThread(thread_state);
-        thread_state = null;
-        return utils.odbcErrToPy(cur.stmt, "RowCount", err);
-    };
+    cur.rowcount = cur.stmt.rowCount() catch |err|
+        return utils.odbcErrToPy(cur.stmt, "RowCount", err, &thread_state);
 
     try cur.stmt.free(.reset_params);
 }
@@ -397,17 +386,10 @@ pub fn nextset(cur_obj: Obj) !bool {
     defer if (thread_state) |t_state| c.PyEval_RestoreThread(t_state);
     cur.stmt.moreResults() catch |err| switch (err) {
         error.MoreResultsNoData => return false,
-        else => {
-            c.PyEval_RestoreThread(thread_state);
-            thread_state = null;
-            return utils.odbcErrToPy(cur.stmt, "MoreResults", err);
-        },
+        else => return utils.odbcErrToPy(cur.stmt, "MoreResults", err, &thread_state),
     };
-    cur.rowcount = cur.stmt.rowCount() catch |err| {
-        c.PyEval_RestoreThread(thread_state);
-        thread_state = null;
-        return utils.odbcErrToPy(cur.stmt, "RowCount", err);
-    };
+    cur.rowcount = cur.stmt.rowCount() catch |err|
+        return utils.odbcErrToPy(cur.stmt, "RowCount", err, &thread_state);
 
     return true;
 }
@@ -433,10 +415,13 @@ pub fn rowcount(cur_obj: Obj) !i64 {
 }
 
 pub fn cancel(cur_obj: Obj) !void {
-    const thread_state = c.PyEval_SaveThread();
-    defer c.PyEval_RestoreThread(thread_state);
+    var thread_state = c.PyEval_SaveThread();
+    defer if (thread_state) |t_state| c.PyEval_RestoreThread(t_state);
     const cur = try StmtCapsule.read_capsule(cur_obj);
-    try cur.stmt.cancel();
+    cur.stmt.cancel() catch |err| switch (err) {
+        error.CancelSuccessWithInfo => {}, // happens sometimes with sql server and no info is provided
+        else => return utils.odbcErrToPy(cur.stmt, "Cancel", err, &thread_state),
+    };
 }
 
 const SchemaCapsule = py.PyCapsule(arrow.ArrowSchema, "arrow_schema", &struct {

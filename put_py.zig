@@ -98,7 +98,7 @@ pub fn ensurePrepared(
     query: []const u8,
 ) !void {
     if (prepared.*) return;
-    stmt.prepare(query) catch |err| return utils.odbcErrToPy(stmt, "Prepare", err);
+    stmt.prepare(query) catch |err| return utils.odbcErrToPy(stmt, "Prepare", err, null);
     prepared.* = true;
 }
 
@@ -182,7 +182,7 @@ pub fn bindParams(
                 @intCast(i_param + 1),
                 .concise_type,
                 desc.sql_type,
-            ) catch |err| return utils.odbcErrToPy(ipd, "SetDescField", err);
+            ) catch |err| return utils.odbcErrToPy(ipd, "SetDescField", err, null);
 
             try ipd.setField(@intCast(i_param + 1), .parameter_type, .input);
             try apd.setField(@intCast(i_param + 1), .indicator_ptr, @ptrCast(&params.items[i_param].ind));
