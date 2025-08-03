@@ -7,6 +7,7 @@ const FetchPy = @import("fetch_py.zig");
 const put_py = @import("put_py.zig");
 const fetch_py = FetchPy.fetch_py;
 const FetchArrow = @import("fetch_arrow.zig");
+const put_arrow = @import("put_arrow.zig");
 const arrow = @import("arrow.zig");
 const c = py.py;
 const Obj = *c.PyObject;
@@ -490,4 +491,22 @@ pub fn arrow_batch(cur_obj: Obj, n_rows: usize) !struct { Obj, Obj } {
         try SchemaCapsule.create_capsule(schema),
         try ArrayCapsule.create_capsule(array),
     };
+}
+
+pub fn executemany_arrow(cur_obj: Obj, query: []const u8, schema_caps: Obj, array_caps: Obj) !void {
+    const schema_batch = try SchemaCapsule.read_capsule(schema_caps);
+    const array_batch = try ArrayCapsule.read_capsule(array_caps);
+
+    const cur = try StmtCapsule.read_capsule(cur_obj);
+    if (cur.result_set) |*result_set| {
+        try result_set.deinit();
+        cur.result_set = null;
+    }
+    var thread_state = c.PyEval_SaveThread();
+    defer if (thread_state) |t_state| c.PyEval_RestoreThread(t_state);
+    // Fixes issue with multiple execute calls without fetches but can error.
+    // Maybe better to discard individual result sets?
+    cur.stmt.closeCursor() catch {};
+
+    try put_arrow.executeMany(cur.stmt, query, schema_batch, array_batch, std.heap.smp_allocator, &thread_state);
 }

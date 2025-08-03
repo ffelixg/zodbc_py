@@ -70,7 +70,7 @@ def connect(constr: str) -> Connection:
 
 class Cursor:
     def __init__(self, con: Connection, datetime2_7_fetch: Datetime2_7_Fetch = Datetime2_7_Fetch.micro):
-        self._con = con
+        self.connection = con
         self._cursor = _zodbc.cursor(con._con, datetime2_7_fetch)
 
     def close(self):
@@ -87,6 +87,13 @@ class Cursor:
         """
         # pyodbc compatibility
         _zodbc.execute(self._cursor, query, params)
+        return self
+
+    def executemany_arrow(self, query: str, batch: "pyarrow.RecordBatch") -> "Cursor":
+        """
+        Execute a SQL query.
+        """
+        _zodbc.executemany_arrow(self._cursor, query, *batch.__arrow_c_array__())
         return self
 
     def arrow_batch(self, n_rows: int) -> "pyarrow.RecordBatch":
