@@ -26,6 +26,13 @@ class Connection:
         return Cursor(self, datetime2_7_fetch)
     
     def getinfo(self, info_type: str) -> str:
+        """
+        Get information about the connection.
+        If a nonsensical info_type is given, the error message contains a list of valid options.
+        See the odbc documentation for SQLGetInfo for details about the individual options.
+        The official parameter names are different from the ones accepted by info_type.
+        For example, "SQL_DBMS_NAME" is the official name, but only "dbms_name" is valid here.
+        """
         return _zodbc.getinfo(self._con, info_type)
 
     def commit(self):
@@ -150,7 +157,7 @@ class Cursor:
 
     def cancel(self) -> None:
         """
-        Cancel the current operation.
+        Cancel the current query. Might block until query finishes if called at an unlucky time.
         """
         _zodbc.cancel(self._cursor)
 

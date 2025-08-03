@@ -348,18 +348,51 @@ pub fn exp_put(val: Obj, con: Obj) ![]const u8 {
 
 pub fn getinfo(con: Obj, info_name: []const u8) !Obj {
     const env_con = try ConnectionCapsule.read_capsule(con);
-    // inline for (@typeInfo(zodbc.odbc.info.InfoTypeString).@"enum") |field| {
-    const info_e = inline for (comptime std.enums.values(zodbc.odbc.info.InfoTypeString)) |info_e| {
-        if (std.mem.eql(u8, @tagName(info_e), info_name)) {
-            break info_e;
+    if (std.meta.stringToEnum(zodbc.odbc.info.InfoTypeString, info_name)) |tag| {
+        const info = env_con.con.getInfoString(
+            std.heap.smp_allocator,
+            tag,
+        ) catch |err| return utils.odbcErrToPy(env_con.con, "GetInfo", err, null);
+        defer std.heap.smp_allocator.free(info);
+        return c.PyUnicode_FromStringAndSize(info.ptr, @intCast(info.len)) orelse return PyErr;
+    }
+    if (std.meta.stringToEnum(zodbc.odbc.info.InfoType, info_name)) |tag| {
+        switch (tag) {
+            inline else => |tag_comp| {
+                const info = env_con.con.getInfoComptime(
+                    tag_comp,
+                ) catch |err| return utils.odbcErrToPy(env_con.con, "GetInfo", err, null);
+                if (@typeInfo(@TypeOf(info)) == .@"enum") {
+                    const name = @tagName(info);
+                    return c.PyUnicode_FromStringAndSize(name.ptr, @intCast(name.len)) orelse return PyErr;
+                } else {
+                    return py.zig_to_py(info);
+                }
+            },
         }
-    } else return py.raise(.NotImplemented, "getinfo for {s} not implemented", .{info_name});
-    const info = try env_con.con.getInfoString(
-        std.heap.smp_allocator,
-        info_e,
-    );
-    defer std.heap.smp_allocator.free(info);
-    return c.PyUnicode_FromStringAndSize(info.ptr, @intCast(info.len)) orelse return PyErr;
+    }
+
+    const msg = comptime blk: {
+        const fields = @typeInfo(zodbc.odbc.info.InfoTypeString).@"enum".fields ++ @typeInfo(zodbc.odbc.info.InfoType).@"enum".fields;
+        var len = 0;
+        for (fields) |field| {
+            len += field.name.len + 2; // 2 for the quotes
+        }
+        len -= 2; // remove the last comma
+        var opts: [len]u8 = undefined;
+        var ix = 0;
+        for (fields, 0..) |field, i_field| {
+            @memcpy(opts[ix..].ptr, field.name);
+            ix += field.name.len;
+            if (i_field < fields.len - 1) {
+                @memcpy(opts[ix..].ptr, ", ");
+                ix += 2;
+            }
+        }
+        std.debug.assert(ix == opts.len);
+        break :blk "Unknown option {s}. Available: " ++ opts;
+    };
+    return py.raise(.ValueError, msg, .{info_name});
 }
 
 pub fn commit(con: Obj) !void {
