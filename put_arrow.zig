@@ -4,6 +4,7 @@ const arrow = @import("arrow.zig");
 const zeit = @import("zeit");
 const c = @import("c");
 const utils = @import("utils.zig");
+const fmt = @import("fmt.zig");
 
 const CDataType = zodbc.odbc.types.CDataType;
 
@@ -13,7 +14,7 @@ const Param = struct {
     ind: []i64,
     data: ?[*]u8,
     ownership: enum { owned, borrowed, dae_u, dae_z, dae_U, dae_Z },
-    misc: ?union(enum) {
+    misc: union(enum) {
         dt: struct {
             strlen: u7,
             prec: u7,
@@ -25,15 +26,21 @@ const Param = struct {
         },
         bytes_fixed: u31,
         varsize: void,
-    } = null,
+        noinfo: void,
+    } = .noinfo,
 };
 
 const ParamList = std.ArrayListUnmanaged(Param);
 
-pub fn deinitParams(params: *ParamList, n_params: usize, ally: std.mem.Allocator) void {
+pub fn deinitParams(params: *ParamList, len: usize, ally: std.mem.Allocator) void {
     for (params.items) |param| {
         switch (param.ownership) {
-            .owned => param.c_type.free(ally, param.data.?[0 .. n_params * param.c_type.sizeOf()]),
+            .owned => {
+                switch (param.misc) {
+                    .dt => |info| ally.free(param.data.?[0 .. len * info.strlen]),
+                    else => param.c_type.free(ally, param.data.?[0 .. len * param.c_type.sizeOf()]),
+                }
+            },
             .borrowed => {},
             .dae_u, .dae_z, .dae_U, .dae_Z => ally.destroy(@as(*usize, @ptrCast(@alignCast(param.data.?)))),
         }
@@ -390,9 +397,38 @@ inline fn fromString(
             .ownership = .owned,
             .misc = .{ .dt = .{ .isstr = false, .prec = 0, .strlen = 8 } },
         },
-        // prepSwitch("ttm") => .time32_milliseconds,
-        // prepSwitch("ttu") => .time64_microseconds,
-        // prepSwitch("ttn") => .time64_nanoseconds,
+        inline prepSwitch("ttu"), prepSwitch("ttn"), prepSwitch("ttm") => |format_comp| {
+            const precision, const A, const trunc_fac = switch (format_comp) {
+                prepSwitch("ttm") => .{ 3, i32, 1 },
+                prepSwitch("ttu") => .{ 6, i64, 1 },
+                prepSwitch("ttn") => .{ 7, i64, 100 },
+                else => comptime unreachable,
+            };
+            const T = fmt.TimeString(precision);
+            const fac = std.math.pow(A, 10, precision);
+            const arr = arrowBufferCast(A, array, false);
+            const data = try ally.alloc(T, @intCast(array.length));
+            for (data, arr, ind) |*d, v, *i| {
+                if (i.* == zodbc.c.SQL_NULL_DATA)
+                    continue;
+                i.* = @sizeOf(T);
+                d.* = fmt.timeToString(
+                    precision,
+                    @intCast(@mod(@divFloor(v, trunc_fac * fac * 60 * 60), 24)),
+                    @intCast(@mod(@divFloor(v, trunc_fac * fac * 60), 60)),
+                    @intCast(@mod(@divFloor(v, trunc_fac * fac), 60)),
+                    @intCast(@mod(@divFloor(v, trunc_fac), fac)),
+                );
+            }
+            return Param{
+                .c_type = .char,
+                .sql_type = .type_time,
+                .ind = ind,
+                .data = @ptrCast(data.ptr),
+                .ownership = .owned,
+                .misc = .{ .dt = .{ .isstr = true, .prec = precision, .strlen = @sizeOf(T) } },
+            };
+        },
         prepSwitch("tss") => return Param{
             .c_type = .type_timestamp,
             .sql_type = .type_timestamp,
@@ -464,36 +500,36 @@ fn bind(
     try apd.setField(coln, .concise_type, param.c_type);
     try ipd.setField(coln, .concise_type, param.sql_type);
 
-    if (param.misc) |misc| {
-        switch (misc) {
-            .dt => |info| {
-                if (param.c_type == .char) {
-                    try apd.setField(coln, .length, info.strlen);
-                    try apd.setField(coln, .octet_length, info.strlen);
-                } else {
-                    try apd.setField(coln, .precision, info.prec);
-                    try apd.setField(coln, .scale, info.prec);
-                }
-                try ipd.setField(coln, .datetime_interval_precision, info.strlen);
-                try ipd.setField(coln, .precision, info.prec);
-                try ipd.setField(coln, .scale, info.prec);
-            },
-            .bytes_fixed => |bytes_fixed_len| {
-                try apd.setField(coln, .octet_length, bytes_fixed_len);
-                try ipd.setField(coln, .length, bytes_fixed_len);
-            },
-            .dec => |info| {
-                try ipd.setField(coln, .precision, info.precision);
-                try ipd.setField(coln, .scale, info.scale);
-                try apd.setField(coln, .precision, info.precision);
-                try apd.setField(coln, .scale, info.scale);
-            },
-            .varsize => {
-                try apd.setField(coln, .octet_length, 0);
-                try ipd.setField(coln, .length, 0);
+    switch (param.misc) {
+        .dt => |info| {
+            if (param.c_type == .char) {
+                try apd.setField(coln, .length, info.strlen);
+                try apd.setField(coln, .octet_length, info.strlen);
                 try apd.setField(coln, .octet_length_ptr, param.ind.ptr);
-            },
-        }
+            } else {
+                try apd.setField(coln, .precision, info.prec);
+                try apd.setField(coln, .scale, info.prec);
+            }
+            try ipd.setField(coln, .datetime_interval_precision, info.strlen);
+            try ipd.setField(coln, .precision, info.prec);
+            try ipd.setField(coln, .scale, info.prec);
+        },
+        .bytes_fixed => |bytes_fixed_len| {
+            try apd.setField(coln, .octet_length, bytes_fixed_len);
+            try ipd.setField(coln, .length, bytes_fixed_len);
+        },
+        .dec => |info| {
+            try ipd.setField(coln, .precision, info.precision);
+            try ipd.setField(coln, .scale, info.scale);
+            try apd.setField(coln, .precision, info.precision);
+            try apd.setField(coln, .scale, info.scale);
+        },
+        .varsize => {
+            try ipd.setField(coln, .length, 0);
+            try apd.setField(coln, .octet_length, 0);
+            try apd.setField(coln, .octet_length_ptr, param.ind.ptr);
+        },
+        .noinfo => {},
     }
 
     try apd.setField(coln, .indicator_ptr, param.ind.ptr);
