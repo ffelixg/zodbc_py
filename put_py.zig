@@ -92,16 +92,6 @@ pub fn deinitParams(params: *ParamList, allocator: std.mem.Allocator) void {
     params.deinit(allocator);
 }
 
-pub fn ensurePrepared(
-    stmt: zodbc.Statement,
-    prepared: *bool,
-    query: []const u8,
-) !void {
-    if (prepared.*) return;
-    stmt.prepare(query) catch |err| return utils.odbcErrToPy(stmt, "Prepare", err, null);
-    prepared.* = true;
-}
-
 pub fn bindParams(
     stmt: zodbc.Statement,
     py_params: Obj,
@@ -162,7 +152,7 @@ pub fn bindParams(
         };
 
         if (is_null) {
-            try ensurePrepared(stmt, prepared, query);
+            try utils.ensurePrepared(stmt, prepared, query, null);
 
             params.appendAssumeCapacity(.{
                 .c_type = undefined,

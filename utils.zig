@@ -78,3 +78,14 @@ pub fn odbcErrToPy(has_handle: anytype, comptime name: []const u8, err: anytype,
 }
 
 pub const Dt7Fetch = enum(u4) { micro = 1, string = 2, nano = 3 };
+
+pub fn ensurePrepared(
+    stmt: zodbc.Statement,
+    prepared: *bool,
+    query: []const u8,
+    thread_state: ?*?*c.PyThreadState,
+) !void {
+    if (prepared.*) return;
+    stmt.prepare(query) catch |err| return odbcErrToPy(stmt, "Prepare", err, thread_state);
+    prepared.* = true;
+}
