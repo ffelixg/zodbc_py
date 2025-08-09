@@ -513,7 +513,17 @@ pub fn executemany_arrow(cur_obj: Obj, query: []const u8, schema_caps: Obj, arra
     cur.stmt.closeCursor() catch {};
 
     errdefer cur.stmt.free(.reset_params) catch {};
-    try put_arrow.executeMany(cur.stmt, query, schema_batch, array_batch, dbgally.allocator(), &thread_state);
+    put_arrow.executeMany(
+        cur.stmt,
+        query,
+        schema_batch,
+        array_batch,
+        dbgally.allocator(),
+        &thread_state,
+    ) catch |err| switch (err) {
+        error.PyErr => return PyErr,
+        error.OutOfMemory => return utils.raise(.Exception, "Ran out of memory", .{}, &thread_state),
+    };
     cur.stmt.free(.reset_params) catch |err|
         return utils.odbcErrToPy(cur.stmt, "FreeStmt", err, &thread_state);
 }

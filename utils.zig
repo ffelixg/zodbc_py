@@ -89,3 +89,19 @@ pub fn ensurePrepared(
     stmt.prepare(query) catch |err| return odbcErrToPy(stmt, "Prepare", err, thread_state);
     prepared.* = true;
 }
+
+pub fn raise(
+    exc: anytype,
+    comptime msg: []const u8,
+    args: anytype,
+    thread_state_ptr: ?*?*c.PyThreadState,
+) error{PyErr} {
+    if (thread_state_ptr) |thread_state| {
+        if (thread_state.*) |ts| {
+            c.PyEval_RestoreThread(ts);
+            thread_state.* = null;
+        }
+    }
+
+    return py.raise(exc, msg, args);
+}
