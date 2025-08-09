@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const py = @import("py");
 const zodbc = @import("zodbc");
 const utils = @import("utils.zig");
@@ -19,6 +20,8 @@ const EnvCon = struct {
     con: zodbc.Connection,
     py_funcs: PyFuncs,
     closed: bool = false,
+    dbg_allocator: if (builtin.mode == .Debug) *std.heap.DebugAllocator(.{}) else void,
+    ally: std.mem.Allocator,
 
     fn close(self: *EnvCon) !void {
         if (self.closed) return;
@@ -34,6 +37,10 @@ const EnvCon = struct {
         // TODO maybe use python warnings?
         self.con.deinit() catch {};
         self.env.deinit() catch {};
+        if (builtin.mode == .Debug) {
+            if (self.dbg_allocator.deinit() != .ok) @panic("Memory issue");
+            std.heap.c_allocator.destroy(self.dbg_allocator);
+        }
     }
 };
 const ConnectionCapsule = py.PyCapsule(EnvCon, "zodbc_con", EnvCon.deinit);
@@ -71,18 +78,18 @@ const Stmt = struct {
         fn deinit(self: *@This()) !void {
             if (self.cache_column_names) |*names| {
                 for (names.items) |name| {
-                    std.heap.smp_allocator.free(name);
+                    self.stmt.env_con.ally.free(name);
                 }
-                names.deinit(std.heap.smp_allocator);
+                names.deinit(self.stmt.env_con.ally);
             }
             if (self.cache_tuple_type) |tp| {
                 c.Py_DECREF(@alignCast(@ptrCast(tp)));
             }
             if (self.cache_fetch_py_state) |fp| {
-                fp.deinit(std.heap.smp_allocator);
+                fp.deinit(self.stmt.env_con.ally);
             }
             if (self.cache_fetch_arrow_state) |fa| {
-                fa.deinit(std.heap.smp_allocator);
+                fa.deinit(self.stmt.env_con.ally);
             }
             try self.result_set.deinit();
         }
@@ -94,19 +101,19 @@ const Stmt = struct {
 
             const n_cols = self.result_set.n_cols;
             var names = try std.ArrayListUnmanaged([:0]const u8).initCapacity(
-                std.heap.smp_allocator,
+                self.stmt.env_con.ally,
                 n_cols,
             );
-            errdefer names.deinit(std.heap.smp_allocator);
-            errdefer for (names.items) |name| std.heap.smp_allocator.free(name);
+            errdefer names.deinit(self.stmt.env_con.ally);
+            errdefer for (names.items) |name| self.stmt.env_con.ally.free(name);
 
             for (0..n_cols) |i_col| {
                 const col_name = try self.result_set.stmt.colAttributeStringZ(
                     @intCast(i_col + 1),
                     .name,
-                    std.heap.smp_allocator,
+                    self.stmt.env_con.ally,
                 );
-                errdefer std.heap.smp_allocator.free(col_name);
+                errdefer self.stmt.env_con.ally.free(col_name);
                 names.appendAssumeCapacity(col_name);
             }
             self.cache_column_names = names;
@@ -118,8 +125,8 @@ const Stmt = struct {
                 return tp;
             }
             const names = try self.columnNames();
-            const fields = try std.heap.smp_allocator.alloc(c.PyStructSequence_Field, names.len + 1);
-            defer std.heap.smp_allocator.free(fields);
+            const fields = try self.stmt.env_con.ally.alloc(c.PyStructSequence_Field, names.len + 1);
+            defer self.stmt.env_con.ally.free(fields);
             fields[fields.len - 1] = c.PyStructSequence_Field{ .doc = null, .name = null };
             for (names, 0..) |name, i_name| {
                 fields[i_name] = .{
@@ -145,7 +152,7 @@ const Stmt = struct {
             }
             const fp = try FetchPy.init(
                 &self.result_set,
-                std.heap.smp_allocator,
+                self.stmt.env_con.ally,
                 self.stmt.dt7_fetch,
             );
             self.cache_fetch_py_state = fp;
@@ -159,7 +166,7 @@ const Stmt = struct {
             }
             const fa = try FetchArrow.init(
                 &self.result_set,
-                std.heap.smp_allocator,
+                self.stmt.env_con.ally,
                 self.stmt.dt7_fetch,
             );
             self.cache_fetch_arrow_state = fa;
@@ -194,10 +201,18 @@ pub fn connect(constr: []const u8) !Obj {
     const py_funcs = try PyFuncs.init();
     errdefer py_funcs.deinit();
 
+    const dbg, const ally = if (builtin.mode == .Debug) blk: {
+        const dbg = std.heap.c_allocator.create(std.heap.DebugAllocator(.{})) catch unreachable;
+        dbg.* = .init;
+        break :blk .{ dbg, dbg.allocator() };
+    } else .{ void{}, std.heap.smp_allocator };
+
     return try ConnectionCapsule.create_capsule(EnvCon{
         .env = env,
         .con = con,
         .py_funcs = py_funcs,
+        .dbg_allocator = dbg,
+        .ally = ally,
     });
 }
 
@@ -211,7 +226,7 @@ pub fn getAutocommit(con: Obj) !bool {
     var odbc_buf: [1024]u8 = undefined;
     odbc_buf = std.mem.zeroes(@TypeOf(odbc_buf));
     const autocommit = try env_con.con.getConnectAttr(
-        std.heap.smp_allocator,
+        env_con.ally,
         .autocommit,
         odbc_buf[0..],
     );
@@ -249,12 +264,12 @@ pub fn execute(cur_obj: Obj, query: []const u8, py_params: Obj) !void {
     var params = try put_py.bindParams(
         cur.stmt,
         py_params,
-        std.heap.smp_allocator,
+        cur.env_con.ally,
         cur.env_con.py_funcs,
         &prepared,
         query,
     );
-    defer put_py.deinitParams(&params, std.heap.smp_allocator);
+    defer put_py.deinitParams(&params, cur.env_con.ally);
     errdefer cur.stmt.free(.reset_params) catch {};
 
     var thread_state = c.PyEval_SaveThread();
@@ -281,12 +296,12 @@ pub fn execute(cur_obj: Obj, query: []const u8, py_params: Obj) !void {
 pub fn fetchmany(cur_obj: Obj, n_rows: ?usize) !Obj {
     const cur = try StmtCapsule.read_capsule(cur_obj);
     if (cur.result_set == null) {
-        cur.result_set = try .init(cur, std.heap.smp_allocator);
+        cur.result_set = try .init(cur, cur.env_con.ally);
     }
     return fetch_py(
         &try cur.result_set.?.fetchPyState(),
         &cur.result_set.?.result_set,
-        std.heap.smp_allocator,
+        cur.env_con.ally,
         n_rows,
         &cur.env_con.py_funcs,
         .tuple,
@@ -298,7 +313,7 @@ pub fn fetchmany(cur_obj: Obj, n_rows: ?usize) !Obj {
 pub fn fetchdicts(cur_obj: Obj, n_rows: ?usize) !Obj {
     const cur = try StmtCapsule.read_capsule(cur_obj);
     if (cur.result_set == null) {
-        cur.result_set = try .init(cur, std.heap.smp_allocator);
+        cur.result_set = try .init(cur, cur.env_con.ally);
     }
 
     const names = try cur.result_set.?.columnNames();
@@ -317,7 +332,7 @@ pub fn fetchdicts(cur_obj: Obj, n_rows: ?usize) !Obj {
     return fetch_py(
         &try cur.result_set.?.fetchPyState(),
         &cur.result_set.?.result_set,
-        std.heap.smp_allocator,
+        cur.env_con.ally,
         n_rows,
         &cur.env_con.py_funcs,
         .dict,
@@ -329,12 +344,12 @@ pub fn fetchdicts(cur_obj: Obj, n_rows: ?usize) !Obj {
 pub fn fetchnamed(cur_obj: Obj, n_rows: ?usize) !Obj {
     const cur = try StmtCapsule.read_capsule(cur_obj);
     if (cur.result_set == null) {
-        cur.result_set = try .init(cur, std.heap.smp_allocator);
+        cur.result_set = try .init(cur, cur.env_con.ally);
     }
     return fetch_py(
         &try cur.result_set.?.fetchPyState(),
         &cur.result_set.?.result_set,
-        std.heap.smp_allocator,
+        cur.env_con.ally,
         n_rows,
         &cur.env_con.py_funcs,
         .named,
@@ -352,10 +367,10 @@ pub fn getinfo(con: Obj, info_name: []const u8) !Obj {
     const env_con = try ConnectionCapsule.read_capsule(con);
     if (std.meta.stringToEnum(zodbc.odbc.info.InfoTypeString, info_name)) |tag| {
         const info = env_con.con.getInfoString(
-            std.heap.smp_allocator,
+            env_con.ally,
             tag,
         ) catch |err| return utils.odbcErrToPy(env_con.con, "GetInfo", err, null);
-        defer std.heap.smp_allocator.free(info);
+        defer env_con.ally.free(info);
         return c.PyUnicode_FromStringAndSize(info.ptr, @intCast(info.len)) orelse return PyErr;
     }
     if (std.meta.stringToEnum(zodbc.odbc.info.InfoType, info_name)) |tag| {
@@ -495,9 +510,6 @@ pub fn arrow_batch(cur_obj: Obj, n_rows: usize) !struct { Obj, Obj } {
 }
 
 pub fn executemany_arrow(cur_obj: Obj, query: []const u8, schema_caps: Obj, array_caps: Obj) !void {
-    var dbgally = std.heap.DebugAllocator(.{}).init;
-    defer if (dbgally.deinit() != .ok) @panic("DBG allocator deinit failed");
-
     const schema_batch = try SchemaCapsule.read_capsule(schema_caps);
     const array_batch = try ArrayCapsule.read_capsule(array_caps);
 
@@ -518,7 +530,7 @@ pub fn executemany_arrow(cur_obj: Obj, query: []const u8, schema_caps: Obj, arra
         query,
         schema_batch,
         array_batch,
-        dbgally.allocator(),
+        cur.env_con.ally,
         &thread_state,
     ) catch |err| switch (err) {
         error.PyErr => return PyErr,

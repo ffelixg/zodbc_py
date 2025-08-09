@@ -121,8 +121,8 @@ pub fn fetch_py(
         allocator,
         n_rows orelse 64,
     );
-    errdefer rows.deinit(allocator);
-    errdefer for (rows.items) |row| c.Py_XDECREF(row);
+    defer rows.deinit(allocator);
+    defer for (rows.items) |row| c.Py_DECREF(row);
     var i_col: usize = 0;
     var i_row: usize = 0;
     sw: switch (Conversions.Tags.begin_row) {
@@ -190,7 +190,7 @@ pub fn fetch_py(
     const py_ret = c.PyList_New(@intCast(rows.items.len)) orelse return py.PyErr;
     errdefer c.Py_DECREF(py_ret);
     for (rows.items, 0..) |row, ix| {
-        if (c.PyList_SetItem(py_ret, @intCast(ix), row) == -1)
+        if (c.PyList_SetItem(py_ret, @intCast(ix), c.Py_NewRef(row)) == -1)
             return py.PyErr;
     }
     return py_ret;
