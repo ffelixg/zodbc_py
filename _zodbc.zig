@@ -274,7 +274,8 @@ pub fn execute(cur_obj: Obj, query: []const u8, py_params: Obj) !void {
     cur.rowcount = cur.stmt.rowCount() catch |err|
         return utils.odbcErrToPy(cur.stmt, "RowCount", err, &thread_state);
 
-    try cur.stmt.free(.reset_params);
+    cur.stmt.free(.reset_params) catch |err|
+        return utils.odbcErrToPy(cur.stmt, "FreeStmt", err, &thread_state);
 }
 
 pub fn fetchmany(cur_obj: Obj, n_rows: ?usize) !Obj {
@@ -494,6 +495,9 @@ pub fn arrow_batch(cur_obj: Obj, n_rows: usize) !struct { Obj, Obj } {
 }
 
 pub fn executemany_arrow(cur_obj: Obj, query: []const u8, schema_caps: Obj, array_caps: Obj) !void {
+    var dbgally = std.heap.DebugAllocator(.{}).init;
+    defer if (dbgally.deinit() != .ok) @panic("DBG allocator deinit failed");
+
     const schema_batch = try SchemaCapsule.read_capsule(schema_caps);
     const array_batch = try ArrayCapsule.read_capsule(array_caps);
 
@@ -508,5 +512,8 @@ pub fn executemany_arrow(cur_obj: Obj, query: []const u8, schema_caps: Obj, arra
     // Maybe better to discard individual result sets?
     cur.stmt.closeCursor() catch {};
 
-    try put_arrow.executeMany(cur.stmt, query, schema_batch, array_batch, std.heap.smp_allocator, &thread_state);
+    errdefer cur.stmt.free(.reset_params) catch {};
+    try put_arrow.executeMany(cur.stmt, query, schema_batch, array_batch, dbgally.allocator(), &thread_state);
+    cur.stmt.free(.reset_params) catch |err|
+        return utils.odbcErrToPy(cur.stmt, "FreeStmt", err, &thread_state);
 }

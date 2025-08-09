@@ -15,15 +15,8 @@ const Param = struct {
     data: ?[*]u8,
     ownership: enum { owned, borrowed, dae_u, dae_z, dae_U, dae_Z },
     misc: union(enum) {
-        dt: struct {
-            strlen: u7,
-            prec: u7,
-            isstr: bool,
-        },
-        dec: struct {
-            precision: u8,
-            scale: i8,
-        },
+        dt: struct { strlen: u7, prec: u7, isstr: bool },
+        dec: struct { precision: u8, scale: i8 },
         bytes_fixed: u31,
         varsize: void,
         noinfo: void,
@@ -36,9 +29,10 @@ pub fn deinitParams(params: *ParamList, len: usize, ally: std.mem.Allocator) voi
     for (params.items) |param| {
         switch (param.ownership) {
             .owned => {
-                switch (param.misc) {
-                    .dt => |info| ally.free(param.data.?[0 .. len * info.strlen]),
-                    else => param.c_type.free(ally, param.data.?[0 .. len * param.c_type.sizeOf()]),
+                if (param.misc == .dt and param.misc.dt.isstr) {
+                    ally.free(param.data.?[0 .. len * param.misc.dt.strlen]);
+                } else {
+                    param.c_type.free(ally, param.data.?[0 .. len * param.c_type.sizeOf()]);
                 }
             },
             .borrowed => {},
@@ -53,69 +47,7 @@ inline fn arrowBufferCast(T: type, array: arrow.ArrowArray, is_var: bool) []T {
     return @as([*]T, @alignCast(@ptrCast(array.buffers[1].?)))[0..@intCast(array.length + if (is_var) 1 else 0)];
 }
 
-inline fn arrowValid(array: arrow.ArrowArray) ?std.DynamicBitSetUnmanaged {
-    if (array.buffers[0]) |valid_buf| {
-        return .{
-            .bit_length = @intCast(array.length),
-            .masks = @alignCast(@ptrCast(valid_buf)),
-        };
-    } else return null;
-}
-
-inline fn dtBuf(
-    A: type,
-    array: arrow.ArrowArray,
-    comptime c_type: CDataType,
-    prec: anytype,
-    ally: std.mem.Allocator,
-) ![*]u8 {
-    const T = c_type.Type();
-    const arr = arrowBufferCast(A, array, false);
-    const buf = try ally.alloc(T, @intCast(array.length));
-    for (buf, arr) |*b, v| {
-        b.* = std.mem.zeroes(T);
-        var val = v;
-        if (@hasField(T, "fraction")) {
-            switch (prec) {
-                0 => {},
-                3 => {
-                    b.*.fraction = @intCast(1_000_000 * @mod(val, 1_000));
-                    val = @divFloor(val, 1_000);
-                },
-                6 => {
-                    b.*.fraction = @intCast(1_000 * @mod(val, 1_000_000));
-                    val = @divFloor(val, 1_000_000);
-                },
-                9 => {
-                    b.*.fraction = @intCast(@mod(val, 1_000_000_000));
-                    val = @divFloor(val, 1_000_000_000);
-                },
-                else => comptime unreachable,
-            }
-        }
-        if (@hasField(T, "hour")) {
-            b.*.second = @intCast(@mod(val, 60));
-            val = @divFloor(val, 60);
-            b.*.minute = @intCast(@mod(val, 60));
-            val = @divFloor(val, 60);
-            b.*.hour = @intCast(@mod(val, 24));
-            val = @divFloor(val, 24);
-        }
-        if (@hasField(T, "year")) {
-            // Min => silent failure but also allows skipping null check
-            const max_date = comptime zeit.daysFromCivil(.{ .year = 9999, .month = .dec, .day = 31 });
-            const date = zeit.civilFromDays(@min(val, max_date));
-            b.*.year = @intCast(date.year);
-            b.*.month = @intFromEnum(date.month);
-            b.*.day = @intCast(date.day);
-        } else {
-            std.debug.assert(val == 0);
-        }
-    }
-    return @ptrCast(buf.ptr);
-}
-
-fn prepSwitch(str: []const u8) u32 {
+inline fn prepSwitch(str: []const u8) u32 {
     var strarr: [4]u8 = .{ 0, 0, 0, 0 };
     @memcpy(strarr[0..str.len], str);
     return @bitCast(strarr);
@@ -140,9 +72,12 @@ inline fn fromString(
 
     const ind = try ally.alloc(i64, @intCast(array.length));
     errdefer ally.free(ind);
-    if (prepSwitch(format_string[0..ix_sep]) == prepSwitch("n")) {
-        @memset(ind, zodbc.c.SQL_NULL_DATA);
-    } else if (arrowValid(array)) |valid| {
+
+    if (array.buffers[0]) |valid_buf| {
+        const valid: std.DynamicBitSetUnmanaged = .{
+            .bit_length = @intCast(array.length),
+            .masks = @alignCast(@ptrCast(valid_buf)),
+        };
         for (ind, 0..) |*i, ix| {
             i.* = if (valid.isSet(ix)) 0 else zodbc.c.SQL_NULL_DATA;
         }
@@ -168,61 +103,37 @@ inline fn fromString(
                 .ownership = .owned,
             };
         },
-        prepSwitch("c") => return Param{
-            .c_type = .stinyint,
-            .sql_type = .tinyint,
-            .ind = ind,
-            .data = array.buffers[1],
-            .ownership = .borrowed,
-        },
-        prepSwitch("C") => return Param{
-            .c_type = .utinyint,
-            .sql_type = .tinyint,
-            .ind = ind,
-            .data = array.buffers[1],
-            .ownership = .borrowed,
-        },
-        prepSwitch("s") => return Param{
-            .c_type = .sshort,
-            .sql_type = .smallint,
-            .ind = ind,
-            .data = array.buffers[1],
-            .ownership = .borrowed,
-        },
-        prepSwitch("S") => return Param{
-            .c_type = .ushort,
-            .sql_type = .smallint,
-            .ind = ind,
-            .data = array.buffers[1],
-            .ownership = .borrowed,
-        },
-        prepSwitch("i") => return Param{
-            .c_type = .slong,
-            .sql_type = .integer,
-            .ind = ind,
-            .data = array.buffers[1],
-            .ownership = .borrowed,
-        },
-        prepSwitch("I") => return Param{
-            .c_type = .ulong,
-            .sql_type = .integer,
-            .ind = ind,
-            .data = array.buffers[1],
-            .ownership = .borrowed,
-        },
-        prepSwitch("l") => return Param{
-            .c_type = .sbigint,
-            .sql_type = .bigint,
-            .ind = ind,
-            .data = array.buffers[1],
-            .ownership = .borrowed,
-        },
-        prepSwitch("L") => return Param{
-            .c_type = .ubigint,
-            .sql_type = .bigint,
-            .ind = ind,
-            .data = array.buffers[1],
-            .ownership = .borrowed,
+        inline prepSwitch("c"),
+        prepSwitch("C"),
+        prepSwitch("s"),
+        prepSwitch("S"),
+        prepSwitch("i"),
+        prepSwitch("I"),
+        prepSwitch("l"),
+        prepSwitch("L"),
+        prepSwitch("f"),
+        prepSwitch("g"),
+        => |format_comp| {
+            const c_type, const sql_type = switch (format_comp) {
+                prepSwitch("c") => .{ .stinyint, .tinyint },
+                prepSwitch("C") => .{ .utinyint, .tinyint },
+                prepSwitch("s") => .{ .sshort, .smallint },
+                prepSwitch("S") => .{ .ushort, .smallint },
+                prepSwitch("i") => .{ .slong, .integer },
+                prepSwitch("I") => .{ .ulong, .integer },
+                prepSwitch("l") => .{ .sbigint, .bigint },
+                prepSwitch("L") => .{ .ubigint, .bigint },
+                prepSwitch("f") => .{ .float, .real },
+                prepSwitch("g") => .{ .double, .float },
+                else => comptime unreachable,
+            };
+            return Param{
+                .c_type = c_type,
+                .sql_type = sql_type,
+                .ind = ind,
+                .data = array.buffers[1],
+                .ownership = .borrowed,
+            };
         },
         // TODO are the 32 bit odbc floats even set up correctly?
         prepSwitch("e") => {
@@ -239,38 +150,18 @@ inline fn fromString(
                 .ownership = .owned,
             };
         },
-        prepSwitch("f") => return Param{
-            .c_type = .float,
-            .sql_type = .real,
-            .ind = ind,
-            .data = array.buffers[1],
-            .ownership = .borrowed,
-        },
-        prepSwitch("g") => return Param{
-            .c_type = .double,
-            .sql_type = .float,
-            .ind = ind,
-            .data = array.buffers[1],
-            .ownership = .borrowed,
-        },
-        prepSwitch("z") => {
-            for (ind) |*i| {
-                if (i.* == 0) {
-                    i.* = zodbc.c.SQL_DATA_AT_EXEC;
-                }
-            }
-            const buf = try ally.create(usize);
-            buf.* = i_param;
-            return Param{
-                .c_type = .binary,
-                .sql_type = .varbinary,
-                .ind = ind,
-                .data = @ptrCast(buf),
-                .ownership = .dae_z,
-                .misc = .{ .varsize = {} },
+        inline prepSwitch("z"),
+        prepSwitch("Z"),
+        prepSwitch("u"),
+        prepSwitch("U"),
+        => |format_comp| {
+            const c_type, const sql_type, const ownership = switch (format_comp) {
+                prepSwitch("z") => .{ .binary, .varbinary, .dae_z },
+                prepSwitch("Z") => .{ .binary, .varbinary, .dae_Z },
+                prepSwitch("u") => .{ .wchar, .wvarchar, .dae_u },
+                prepSwitch("U") => .{ .wchar, .wvarchar, .dae_U },
+                else => comptime unreachable,
             };
-        },
-        prepSwitch("Z") => {
             for (ind) |*i| {
                 if (i.* == 0) {
                     i.* = zodbc.c.SQL_DATA_AT_EXEC;
@@ -279,45 +170,11 @@ inline fn fromString(
             const buf = try ally.create(usize);
             buf.* = i_param;
             return Param{
-                .c_type = .binary,
-                .sql_type = .varbinary,
+                .c_type = c_type,
+                .sql_type = sql_type,
                 .ind = ind,
                 .data = @ptrCast(buf),
-                .ownership = .dae_Z,
-                .misc = .{ .varsize = {} },
-            };
-        },
-        prepSwitch("u") => {
-            for (ind) |*i| {
-                if (i.* == 0) {
-                    i.* = zodbc.c.SQL_DATA_AT_EXEC;
-                }
-            }
-            const buf = try ally.create(usize);
-            buf.* = i_param;
-            return Param{
-                .c_type = .wchar,
-                .sql_type = .wvarchar,
-                .ind = ind,
-                .data = @ptrCast(buf),
-                .ownership = .dae_u,
-                .misc = .{ .varsize = {} },
-            };
-        },
-        prepSwitch("U") => {
-            for (ind) |*i| {
-                if (i.* == 0) {
-                    i.* = zodbc.c.SQL_DATA_AT_EXEC;
-                }
-            }
-            const buf = try ally.create(usize);
-            buf.* = i_param;
-            return Param{
-                .c_type = .wchar,
-                .sql_type = .wvarchar,
-                .ind = ind,
-                .data = @ptrCast(buf),
-                .ownership = .dae_U,
+                .ownership = ownership,
                 .misc = .{ .varsize = {} },
             };
         },
@@ -332,16 +189,16 @@ inline fn fromString(
                     u31,
                     format_string[ix_sep + 1 ..],
                     10,
-                ) catch return error.UnrecognizedArrowFormatInfo },
+                ) catch return error.UnrecognizedArrowFormat },
             };
         },
         prepSwitch("d") => {
             var parts = std.mem.tokenizeScalar(u8, format_string[ix_sep + 1 ..], ',');
-            const precision = parts.next() orelse return error.UnrecognizedArrowFormatInfo;
-            const scale = parts.next() orelse return error.UnrecognizedArrowFormatInfo;
-            if (parts.next() != null) return error.UnrecognizedArrowFormatInfo;
-            const precision_int = std.fmt.parseInt(u8, precision, 10) catch return error.UnrecognizedArrowFormatInfo;
-            const scale_int = std.fmt.parseInt(i7, scale, 10) catch return error.UnrecognizedArrowFormatInfo;
+            const precision = parts.next() orelse return error.UnrecognizedArrowFormat;
+            const scale = parts.next() orelse return error.UnrecognizedArrowFormat;
+            if (parts.next() != null) return error.UnrecognizedArrowFormat;
+            const precision_int = std.fmt.parseInt(u8, precision, 10) catch return error.UnrecognizedArrowFormat;
+            const scale_int = std.fmt.parseInt(i7, scale, 10) catch return error.UnrecognizedArrowFormat;
 
             const arr = arrowBufferCast(i128, array, false);
             const buf = try ally.alloc(CDataType.numeric.Type(), arr.len);
@@ -365,13 +222,10 @@ inline fn fromString(
             };
         },
         prepSwitch("n") => {
+            @memset(ind, zodbc.c.SQL_NULL_DATA);
             try utils.ensurePrepared(stmt, prepared, query, thread_state);
-            const desc = stmt.describeParam(@intCast(i_param + 1)) catch |err| return utils.odbcErrToPy(
-                stmt,
-                "DescribeParam",
-                err,
-                thread_state,
-            );
+            const desc = stmt.describeParam(@intCast(i_param + 1)) catch |err|
+                return utils.odbcErrToPy(stmt, "DescribeParam", err, thread_state);
             return Param{
                 .c_type = .default,
                 .sql_type = desc.sql_type,
@@ -380,28 +234,14 @@ inline fn fromString(
                 .ownership = .borrowed,
             };
         },
-        prepSwitch("tdD") => return Param{
-            .c_type = .type_date,
-            .sql_type = .type_date,
-            .ind = ind,
-            .data = try dtBuf(i32, array, .type_date, 0, ally),
-            .ownership = .owned,
-            .misc = .{ .dt = .{ .isstr = false, .prec = 0, .strlen = 10 } },
-        },
-        // prepSwitch("tdm") => .date64_milliseconds,
-        prepSwitch("tts") => return Param{
-            .c_type = .type_time,
-            .sql_type = .type_time,
-            .ind = ind,
-            .data = try dtBuf(i32, array, .type_time, 0, ally),
-            .ownership = .owned,
-            .misc = .{ .dt = .{ .isstr = false, .prec = 0, .strlen = 8 } },
-        },
-        inline prepSwitch("ttu"), prepSwitch("ttn"), prepSwitch("ttm") => |format_comp| {
+        inline prepSwitch("ttu"),
+        prepSwitch("ttn"),
+        prepSwitch("ttm"),
+        => |format_comp| {
             const precision, const A, const trunc_fac = switch (format_comp) {
-                prepSwitch("ttm") => .{ 3, i32, 1 },
-                prepSwitch("ttu") => .{ 6, i64, 1 },
-                prepSwitch("ttn") => .{ 7, i64, 100 },
+                prepSwitch("ttm") => .{ 3, u32, 1 },
+                prepSwitch("ttu") => .{ 6, u64, 1 },
+                prepSwitch("ttn") => .{ 7, u64, 100 },
                 else => comptime unreachable,
             };
             const T = fmt.TimeString(precision);
@@ -429,40 +269,70 @@ inline fn fromString(
                 .misc = .{ .dt = .{ .isstr = true, .prec = precision, .strlen = @sizeOf(T) } },
             };
         },
-        prepSwitch("tss") => return Param{
-            .c_type = .type_timestamp,
-            .sql_type = .type_timestamp,
-            .ind = ind,
-            .data = try dtBuf(i64, array, .type_timestamp, 0, ally),
-            .ownership = .owned,
-            .misc = .{ .dt = .{ .isstr = false, .prec = 0, .strlen = 19 } },
+        inline prepSwitch("tdD"),
+        prepSwitch("tts"),
+        prepSwitch("tss"),
+        prepSwitch("tsm"),
+        prepSwitch("tsu"),
+        prepSwitch("tsn"),
+        => |format_comp| {
+            const type_enum, const A, const precision, const trunc = switch (comptime format_comp) {
+                prepSwitch("tdD") => .{ .type_date, u32, 0, 1 },
+                prepSwitch("tts") => .{ .type_time, u32, 0, 1 },
+                prepSwitch("tss") => .{ .type_timestamp, u64, 0, 1 },
+                prepSwitch("tsm") => .{ .type_timestamp, u64, 3, 1 },
+                prepSwitch("tsu") => .{ .type_timestamp, u64, 6, 1 },
+                prepSwitch("tsn") => .{ .type_timestamp, u64, 7, 100 },
+                else => comptime unreachable,
+            };
+            const T = @field(CDataType, @tagName(type_enum)).Type();
+
+            comptime var strlen = precision; // fraction
+            if (@hasField(T, "year")) strlen += 10; // date
+            if (@hasField(T, "year") and @hasField(T, "hour")) strlen += 1; // space between date and time
+            if (@hasField(T, "hour")) strlen += 8; // time
+            if (@hasField(T, "fraction")) strlen += 1; // period before fraction
+
+            const arr = arrowBufferCast(A, array, false);
+            const buf = try ally.alloc(T, @intCast(array.length));
+            for (buf, arr) |*b, v| {
+                b.* = std.mem.zeroes(T);
+                var val = @divFloor(v, trunc);
+                if (@hasField(T, "fraction")) {
+                    const mod: comptime_int = comptime std.math.pow(i64, 10, precision);
+                    const rem: comptime_int = comptime std.math.pow(i64, 10, 9 - precision);
+                    b.*.fraction = @intCast(rem * @mod(val, mod));
+                    val = @divFloor(val, mod);
+                }
+                if (@hasField(T, "hour")) {
+                    b.*.second = @intCast(@mod(val, 60));
+                    val = @divFloor(val, 60);
+                    b.*.minute = @intCast(@mod(val, 60));
+                    val = @divFloor(val, 60);
+                    b.*.hour = @intCast(@mod(val, 24));
+                    val = @divFloor(val, 24);
+                }
+                if (@hasField(T, "year")) {
+                    const max_date = comptime zeit.daysFromCivil(.{ .year = 9999, .month = .dec, .day = 31 });
+                    std.debug.assert(val <= max_date);
+                    const date = zeit.civilFromDays(@min(val, max_date));
+                    b.*.year = @intCast(date.year);
+                    b.*.month = @intFromEnum(date.month);
+                    b.*.day = @intCast(date.day);
+                } else {
+                    std.debug.assert(val == 0);
+                }
+            }
+            return Param{
+                .c_type = type_enum,
+                .sql_type = type_enum,
+                .ind = ind,
+                .data = @ptrCast(buf.ptr),
+                .ownership = .owned,
+                .misc = .{ .dt = .{ .isstr = false, .prec = precision, .strlen = strlen } },
+            };
         },
-        prepSwitch("tsm") => return Param{
-            .c_type = .type_timestamp,
-            .sql_type = .type_timestamp,
-            .ind = ind,
-            .data = try dtBuf(i64, array, .type_timestamp, 3, ally),
-            .ownership = .owned,
-            .misc = .{ .dt = .{ .isstr = false, .prec = 3, .strlen = 23 } },
-        },
-        prepSwitch("tsu") => return Param{
-            .c_type = .type_timestamp,
-            .sql_type = .type_timestamp,
-            .ind = ind,
-            .data = try dtBuf(i64, array, .type_timestamp, 6, ally),
-            .ownership = .owned,
-            .misc = .{ .dt = .{ .isstr = false, .prec = 6, .strlen = 26 } },
-        },
-        prepSwitch("tsn") => return Param{
-            .c_type = .type_timestamp,
-            .sql_type = .type_timestamp,
-            .ind = ind,
-            .data = try dtBuf(i64, array, .type_timestamp, 9, ally),
-            .ownership = .owned,
-            // TODO ok to just truncate to 7?
-            // Maybe this should be driver dependent or look at the parameter description
-            .misc = .{ .dt = .{ .isstr = false, .prec = 7, .strlen = 27 } },
-        },
+        prepSwitch("tdm") => return error.Date64NotImplemented,
         prepSwitch("tDs"),
         prepSwitch("tDm"),
         prepSwitch("tDu"),
@@ -594,6 +464,7 @@ pub fn executeMany(
     }
     if (!need_data) return;
     var u16_buf = try ally.alloc(u16, 4000);
+    defer ally.free(u16_buf);
     while (stmt.paramData(usize) catch |err| {
         return utils.odbcErrToPy(stmt, "ParamData", err, thread_state);
     }) |i_param| {
@@ -604,10 +475,8 @@ pub fn executeMany(
         switch (param.ownership) {
             inline .dae_u, .dae_U, .dae_z, .dae_Z => |dae| {
                 const values = arrowBufferCast(switch (dae) {
-                    .dae_u => u32,
-                    .dae_U => u64,
-                    .dae_z => u32,
-                    .dae_Z => u64,
+                    .dae_u, .dae_z => u32,
+                    .dae_U, .dae_Z => u64,
                     else => comptime unreachable,
                 }, array, true);
                 const data = data_buf[values[rows_processed - 1]..values[rows_processed]];
@@ -617,14 +486,12 @@ pub fn executeMany(
                             u16_buf = try ally.realloc(u16_buf, data.len);
                         }
                         const len = try std.unicode.wtf8ToWtf16Le(u16_buf, data);
-                        stmt.putData(@ptrCast(u16_buf[0..len])) catch |err| {
+                        stmt.putData(@ptrCast(u16_buf[0..len])) catch |err|
                             return utils.odbcErrToPy(stmt, "PutData", err, thread_state);
-                        };
                     },
                     .dae_z, .dae_Z => {
-                        stmt.putData(data) catch |err| {
+                        stmt.putData(data) catch |err|
                             return utils.odbcErrToPy(stmt, "PutData", err, thread_state);
-                        };
                     },
                     else => comptime unreachable,
                 }
