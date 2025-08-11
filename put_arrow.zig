@@ -179,17 +179,20 @@ inline fn fromString(
             };
         },
         prepSwitch("w") => {
+            const width = std.fmt.parseInt(u31, format_string[ix_sep + 1 ..], 10) catch
+                return error.UnrecognizedArrowFormat;
+            for (ind) |*i| {
+                if (i.* == 0) {
+                    i.* = width;
+                }
+            }
             return Param{
                 .c_type = .binary,
                 .sql_type = .binary,
                 .ind = ind,
                 .data = array.buffers[1],
                 .ownership = .borrowed,
-                .misc = .{ .bytes_fixed = std.fmt.parseInt(
-                    u31,
-                    format_string[ix_sep + 1 ..],
-                    10,
-                ) catch return error.UnrecognizedArrowFormat },
+                .misc = .{ .bytes_fixed = width },
             };
         },
         prepSwitch("d") => {
@@ -270,6 +273,7 @@ inline fn fromString(
             };
         },
         inline prepSwitch("tdD"),
+        prepSwitch("tdm"),
         prepSwitch("tts"),
         prepSwitch("tss"),
         prepSwitch("tsm"),
@@ -277,12 +281,13 @@ inline fn fromString(
         prepSwitch("tsn"),
         => |format_comp| {
             const type_enum, const A, const precision, const trunc = switch (comptime format_comp) {
-                prepSwitch("tdD") => .{ .type_date, u32, 0, 1 },
+                prepSwitch("tdD") => .{ .type_date, i32, 0, 1 },
+                prepSwitch("tdm") => .{ .type_date, i64, 0, 1000 * 3600 * 24 },
                 prepSwitch("tts") => .{ .type_time, u32, 0, 1 },
-                prepSwitch("tss") => .{ .type_timestamp, u64, 0, 1 },
-                prepSwitch("tsm") => .{ .type_timestamp, u64, 3, 1 },
-                prepSwitch("tsu") => .{ .type_timestamp, u64, 6, 1 },
-                prepSwitch("tsn") => .{ .type_timestamp, u64, 7, 100 },
+                prepSwitch("tss") => .{ .type_timestamp, i64, 0, 1 },
+                prepSwitch("tsm") => .{ .type_timestamp, i64, 3, 1 },
+                prepSwitch("tsu") => .{ .type_timestamp, i64, 6, 1 },
+                prepSwitch("tsn") => .{ .type_timestamp, i64, 7, 100 },
                 else => comptime unreachable,
             };
             const T = @field(CDataType, @tagName(type_enum)).Type();
@@ -314,8 +319,10 @@ inline fn fromString(
                 }
                 if (@hasField(T, "year")) {
                     const max_date = comptime zeit.daysFromCivil(.{ .year = 9999, .month = .dec, .day = 31 });
+                    const min_date = comptime zeit.daysFromCivil(.{ .year = 1, .month = .jan, .day = 1 });
                     std.debug.assert(val <= max_date);
-                    const date = zeit.civilFromDays(@min(val, max_date));
+                    std.debug.assert(val >= min_date);
+                    const date = zeit.civilFromDays(@min(@max(val, min_date), max_date));
                     b.*.year = @intCast(date.year);
                     b.*.month = @intFromEnum(date.month);
                     b.*.day = @intCast(date.day);
@@ -332,7 +339,6 @@ inline fn fromString(
                 .misc = .{ .dt = .{ .isstr = false, .prec = precision, .strlen = strlen } },
             };
         },
-        prepSwitch("tdm") => return utils.raise(.NotImplemented, "Date64 is not implemented", .{}, thread_state),
         prepSwitch("tDs"),
         prepSwitch("tDm"),
         prepSwitch("tDu"),
@@ -386,7 +392,9 @@ fn bind(
             ipd.setField(coln, .scale, info.prec) catch |err| return utils.odbcErrToPy(ipd, "SetDescField", err, thread_state);
         },
         .bytes_fixed => |bytes_fixed_len| {
+            apd.setField(coln, .length, bytes_fixed_len) catch |err| return utils.odbcErrToPy(apd, "SetDescField", err, thread_state);
             apd.setField(coln, .octet_length, bytes_fixed_len) catch |err| return utils.odbcErrToPy(apd, "SetDescField", err, thread_state);
+            apd.setField(coln, .octet_length_ptr, param.ind.ptr) catch |err| return utils.odbcErrToPy(apd, "SetDescField", err, thread_state);
             ipd.setField(coln, .length, bytes_fixed_len) catch |err| return utils.odbcErrToPy(ipd, "SetDescField", err, thread_state);
         },
         .dec => |info| {

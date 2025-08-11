@@ -8,9 +8,9 @@ class Datetime2_7_Fetch(IntEnum):
     nano = 3
 
 class Connection:
-    def __init__(self, constr: str):
-        self._con = _zodbc.connect(constr)
-    
+    def __init__(self, constr: str, autocommit: bool = False):
+        self._con = _zodbc.connect(constr, autocommit)
+
     @property
     def autocommit(self) -> bool:
         return _zodbc.getAutocommit(self._con)
@@ -62,11 +62,11 @@ class Connection:
         finally:
             self._con = None
 
-def connect(constr: str) -> Connection:
+def connect(constr: str, autocommit: bool = False) -> Connection:
     """
     Connect to a database using the given connection string.
     """
-    return Connection(constr)
+    return Connection(constr, autocommit)
 
 class Cursor:
     def __init__(self, con: Connection, datetime2_7_fetch: Datetime2_7_Fetch = Datetime2_7_Fetch.micro):
@@ -167,6 +167,12 @@ class Cursor:
         Cancel the current query. Might block until query finishes if called at an unlucky time.
         """
         _zodbc.cancel(self._cursor)
+
+    def close_cursor(self) -> None:
+        """
+        Close the current cursor.
+        """
+        _zodbc.close_cursor(self._cursor)
 
     @property
     def rowcount(self) -> int:

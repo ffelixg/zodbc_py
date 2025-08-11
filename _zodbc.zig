@@ -189,12 +189,14 @@ const Stmt = struct {
 };
 const StmtCapsule = py.PyCapsule(Stmt, "zodbc_stmt", Stmt.deinit);
 
-pub fn connect(constr: []const u8) !Obj {
+pub fn connect(constr: []const u8, autocommit: bool) !Obj {
     const env = try zodbc.Environment.init(.v3_80);
     errdefer env.deinit() catch {};
     const con = try zodbc.Connection.init(env);
     errdefer con.deinit() catch {};
-    try con.setConnectAttr(.{ .autocommit = .on });
+    // on by default
+    if (!autocommit)
+        try con.setConnectAttr(.{ .autocommit = .off });
     try con.connectWithString(constr);
     errdefer con.disconnect() catch {};
 
@@ -270,18 +272,20 @@ pub fn execute(cur_obj: Obj, query: []const u8, py_params: Obj) !void {
         query,
     );
     defer put_py.deinitParams(&params, cur.env_con.ally);
-    errdefer cur.stmt.free(.reset_params) catch {};
+    errdefer if (params.items.len > 0) cur.stmt.free(.reset_params) catch {};
 
     var thread_state = c.PyEval_SaveThread();
     defer if (thread_state) |t_state| c.PyEval_RestoreThread(t_state);
     if (prepared) {
         cur.stmt.execute() catch |err| switch (err) {
             error.ExecuteNoData => {},
+            error.ExecuteSuccessWithInfo => {},
             else => return utils.odbcErrToPy(cur.stmt, "Execute", err, &thread_state),
         };
     } else {
         cur.stmt.execDirect(query) catch |err| switch (err) {
             error.ExecDirectNoData => {},
+            error.ExecDirectSuccessWithInfo => {},
             else => return utils.odbcErrToPy(cur.stmt, "ExecDirect", err, &thread_state),
         };
     }
@@ -289,7 +293,7 @@ pub fn execute(cur_obj: Obj, query: []const u8, py_params: Obj) !void {
     cur.rowcount = cur.stmt.rowCount() catch |err|
         return utils.odbcErrToPy(cur.stmt, "RowCount", err, &thread_state);
 
-    cur.stmt.free(.reset_params) catch |err|
+    if (params.items.len > 0) cur.stmt.free(.reset_params) catch |err|
         return utils.odbcErrToPy(cur.stmt, "FreeStmt", err, &thread_state);
 }
 
@@ -538,4 +542,14 @@ pub fn executemany_arrow(cur_obj: Obj, query: []const u8, schema_caps: Obj, arra
     };
     cur.stmt.free(.reset_params) catch |err|
         return utils.odbcErrToPy(cur.stmt, "FreeStmt", err, &thread_state);
+}
+
+pub fn close_cursor(cur_obj: Obj) !void {
+    const cur = try StmtCapsule.read_capsule(cur_obj);
+    if (cur.result_set) |*result_set| {
+        try result_set.deinit();
+        cur.result_set = null;
+    }
+    cur.stmt.closeCursor() catch |err|
+        return utils.odbcErrToPy(cur.stmt, "CloseCursor", err, null);
 }

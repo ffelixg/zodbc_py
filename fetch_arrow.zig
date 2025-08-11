@@ -447,6 +447,13 @@ pub fn fetch_batch(
                         conv,
                         arr,
                     );
+                } else if (comptime conv == .bit) {
+                    var bitset: std.DynamicBitSetUnmanaged = .{ .bit_length = n_rows, .masks = values.ptr };
+                    switch (conv.asTypeValue(bytes)) {
+                        0 => bitset.unset(i_row),
+                        1 => bitset.set(i_row),
+                        else => unreachable,
+                    }
                 } else {
                     values[i_row] = try odbcToArrowScalar(bytes, conv);
                 }
@@ -523,7 +530,6 @@ inline fn odbcToArrowScalar(
         .sbigint,
         .ubigint,
         => return val,
-        .bit => @panic("TODO put this somewhere else"),
         .numeric => return @as(i128, @bitCast(val.val)) * switch (val.sign) {
             1 => @as(i2, 1),
             0 => @as(i2, -1),
@@ -585,12 +591,12 @@ inline fn odbcToArrowScalar(
                 arrow_val -= @as(A, val.timezone_minute) * 60;
             }
             if (@hasField(T, "fraction")) {
-                // TODO handle overflow with __nano types gracefully
-                arrow_val *= std.math.pow(A, 10, 9 - prec_mult);
-                arrow_val += @as(A, @divTrunc(
+                const err = error.@"Datetime(7) value is too large or too small for Arrow type with nano second precision";
+                arrow_val = std.math.mul(A, arrow_val, std.math.pow(A, 10, 9 - prec_mult)) catch return err;
+                arrow_val = std.math.add(A, arrow_val, @divTrunc(
                     @as(A, @intCast(val.fraction)),
                     std.math.pow(A, 10, prec_mult),
-                ));
+                )) catch return err;
             }
             return arrow_val;
         },

@@ -134,7 +134,8 @@ pub fn fetch_py(
                 if (try res.borrowRow() == null)
                     break :sw;
             }
-            rows.appendAssumeCapacity(
+            try rows.append(
+                allocator,
                 switch (row_type) {
                     .tuple => c.PyTuple_New(@intCast(res.n_cols)) orelse return py.PyErr,
                     .dict => c.PyDict_New() orelse return py.PyErr,
