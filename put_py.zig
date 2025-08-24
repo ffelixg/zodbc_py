@@ -73,15 +73,20 @@ const ParamList = std.ArrayListUnmanaged(struct {
     sql_type: zodbc.odbc.types.SQLDataType,
     ind: i64 = zodbc.c.SQL_NULL_DATA,
     data: ?[]u8,
-    dt_info: ?struct {
-        strlen: u7,
-        prec: u7,
-        isstr: bool,
-    } = null,
-    dec_info: ?struct {
-        precision: u8,
-        scale: i8,
-    } = null,
+    misc: union(enum) {
+        dt: struct {
+            strlen: u7,
+            prec: u7,
+            isstr: bool,
+        },
+        dec: struct {
+            precision: u8,
+            scale: i8,
+        },
+        arrow_tvp: struct {},
+        varsize: void,
+        noinfo: void,
+    } = .noinfo,
 
     pub fn deinit(self: @This(), ally: std.mem.Allocator) void {
         if (self.data) |buf| self.c_type.free(ally, buf);
@@ -202,6 +207,7 @@ pub fn bindParams(
                         char_ptr[0..@intCast(size)],
                     ));
                 },
+                .misc = .varsize,
             },
             .binary => .{
                 .c_type = .binary,
@@ -215,6 +221,7 @@ pub fn bindParams(
                     }
                     break :blk try allocator.dupe(u8, ptr[0..@intCast(size)]);
                 },
+                .misc = .varsize,
             },
             .slong => .{
                 .c_type = .slong,
@@ -269,10 +276,10 @@ pub fn bindParams(
                         .numeric,
                         val,
                     ),
-                    .dec_info = .{
+                    .misc = .{ .dec = .{
                         .precision = val.precision,
                         .scale = val.scale,
-                    },
+                    } },
                 };
             },
             .guid => .{
@@ -306,11 +313,11 @@ pub fn bindParams(
                     .type_date,
                     try utils.attrsToStruct(zodbc.c.SQL_DATE_STRUCT, py_val),
                 ),
-                .dt_info = .{
+                .misc = .{ .dt = .{
                     .strlen = 10,
                     .prec = 0,
                     .isstr = false,
-                },
+                } },
             },
             .type_time_string => .{
                 .c_type = .char,
@@ -331,11 +338,11 @@ pub fn bindParams(
                     ));
                     break :blk str;
                 },
-                .dt_info = .{
+                .misc = .{ .dt = .{
                     .strlen = @sizeOf(fmt.TimeString(6)),
                     .prec = 6,
                     .isstr = true,
-                },
+                } },
             },
             .type_timestamp => .{
                 .c_type = .type_timestamp,
@@ -360,97 +367,63 @@ pub fn bindParams(
                         .fraction = val.microsecond * 1000,
                     });
                 },
-                .dt_info = .{
+                .misc = .{ .dt = .{
                     .strlen = @sizeOf(fmt.DateString) + 1 + @sizeOf(fmt.TimeString(6)),
                     .prec = 6,
                     .isstr = false,
-                },
+                } },
             },
             .arrow_table => {
                 const atvp_type = c.PyObject_GetAttrString(py_val, "_type") orelse return error.PyErr;
                 defer c.Py_DECREF(atvp_type);
-                const py_name = c.PyObject_GetAttrString(atvp_type, "name") orelse return error.PyErr;
-                defer c.Py_DECREF(py_name);
-                const name = blk: {
+                const py_table_name = c.PyObject_GetAttrString(atvp_type, "table_name") orelse return error.PyErr;
+                defer c.Py_DECREF(py_table_name);
+                const table_name = blk: {
                     var sz: isize = 0;
-                    const name = c.PyUnicode_AsUTF8AndSize(py_name, &sz) orelse return error.PyErr;
-                    break :blk name[0..if (sz < 0) return error.PyErr else @intCast(sz)];
+                    const table_name = c.PyUnicode_AsUTF8AndSize(py_table_name, &sz) orelse return error.PyErr;
+                    break :blk table_name[0..if (sz < 0) return error.PyErr else @intCast(sz)];
                 };
 
-                // apd.setField(@intCast(i_param + 1), .concise_type, .default) catch return apd.getLastError();
-                // std.debug.print("hey\n", .{});
-                // ipd.setField(@intCast(i_param + 1), .length, name.len) catch return ipd.getLastError();
-                // std.debug.print("hey\n", .{});
-                // ipd.setField(@intCast(i_param + 1), .concise_type, .ss_table) catch return ipd.getLastError();
-                // std.debug.print("hey\n", .{});
-                // var ind: i64 = @intCast(name.len);
-                // apd.setField(@intCast(i_param + 1), .indicator_ptr, @ptrCast(&ind)) catch return apd.getLastError();
-                // std.debug.print("hey\n", .{});
-                // apd.setField(@intCast(i_param + 1), .data_ptr, @constCast(name.ptr)) catch return apd.getLastError();
-                // std.debug.print("hey\n", .{});
-                // ipd.setField(@intCast(i_param + 1), .parameter_type, .input) catch return ipd.getLastError();
-                // std.debug.print("heyend\n", .{});
+                const schema_caps = c.PyObject_GetAttrString(py_val, "_batch_schema") orelse return error.PyErr;
+                defer c.Py_DECREF(schema_caps);
+                const array_caps = c.PyObject_GetAttrString(py_val, "_batch_array") orelse return error.PyErr;
+                defer c.Py_DECREF(array_caps);
+                const schema_batch = try @import("arrow.zig").SchemaCapsule.read_capsule(schema_caps);
+                const array_batch = try @import("arrow.zig").ArrayCapsule.read_capsule(array_caps);
 
-                std.debug.print("Binding ArrowTVP param {d} with name {s}\n", .{ i_param + 1, name });
-                const name_16 = try std.unicode.wtf8ToWtf16LeAllocZ(allocator, name);
-                defer allocator.free(name_16);
-
-                // std.debug.print("hey\n", .{});
-                var nr_rows: i64 = 2;
-                if (0 != zodbc.c.SQLBindParameter(
-                    stmt.handle(),
-                    @intCast(i_param + 1),
-                    @intFromEnum(zodbc.odbc.attributes.ParameterType.input),
-                    @intFromEnum(zodbc.odbc.types.CDataType.binary),
-                    @intFromEnum(zodbc.odbc.types.SQLDataType.ss_table),
-                    1, // nr_cols
+                std.debug.assert(schema_batch.n_children == array_batch.n_children);
+                const n_cols = array_batch.n_children;
+                var n_rows: i64 = array_batch.length;
+                try stmt.bindParameter(
+                    1,
+                    .input,
+                    .binary,
+                    .ss_table,
+                    @intCast(n_cols),
                     0,
-                    // @ptrCast(@constCast(name_16.ptr)),
-                    // @intCast(name_16.len * 2),
                     null,
                     0,
-                    @ptrCast(&nr_rows),
-                )) {
-                    std.debug.print("Error binding tvp\n", .{});
-                    return stmt.getLastError();
-                }
-                // try ipd.setFieldString(@intCast(i_param + 1), .ss_type_name, "test_tabletype");
-                // try ipd.setFieldString(@intCast(i_param + 1), .ss_schema_name, "dbo");
-                // std.debug.print("ParamInfo: {any}\n", .{stmt.describeParam(
-                //     @intCast(i_param + 1),
-                // ) catch return stmt.getLastError()});
+                    @ptrCast(&n_rows),
+                );
 
-                try ipd.setFieldString(@intCast(i_param + 1), .ss_type_name, name);
-                // try ipd.setField(@intCast(i_param + 1), .length, 1);
-                // try ipd.setField(@intCast(i_param + 1), .precision, 1);
-                // try ipd.setField(@intCast(i_param + 1), ., value: FieldType(field, .imp_param_desc))
+                std.debug.print("Binding ArrowTVP param {d} with name {s}\n", .{ i_param + 1, table_name });
+                const name_16 = try std.unicode.wtf8ToWtf16LeAllocZ(allocator, table_name);
+                defer allocator.free(name_16);
+
+                try ipd.setFieldString(@intCast(i_param + 1), .ss_type_name, table_name);
+                // try ipd.setFieldString(@intCast(i_param + 1), .ss_schema_name, table_name);
                 var idk: [10]i32 = undefined;
                 try apd.setField(@intCast(i_param + 1), .data_ptr, @ptrCast(&idk));
-                std.debug.print("hey2\n", .{});
 
-                // try ipd.setFieldString(@intCast(i_param + 1), .ss_type_name, "test_tabletype");
-                // try ipd.setFieldString(@intCast(i_param + 1), .ss_schema_name, "dbo");
-                // std.debug.print("ParamInfo: {any}\n", .{stmt.describeParam(
-                //     @intCast(i_param + 1),
-                // ) catch return stmt.getLastError()});
-
-                // stmt.setStmtAttr(.ss_param_focus, @intCast(0)) catch return stmt.getLastError();
                 stmt.setStmtAttr(.ss_param_focus, @intCast(i_param + 1)) catch |err| return utils.odbcErrToPy(stmt, "SetStmtAttr", err, null);
-                // stmt.setStmtAttr(.ss_param_focus, @intCast(i_param + 1)) catch |err| {
-                //     std.debug.print("Error {any} setting ss_param_focus to {}\n", .{ err, i_param + 1 });
-                //     std.debug.print("Focus: {any}\n", .{try stmt.getStmtAttr(.ss_param_focus)});
-                //     return stmt.getLastError();
-                // };
-                std.debug.print("hey3\n", .{});
 
                 var ind: i64 = 0;
-                var data = [_]i64{ 42, 66 };
-                apd.setField(@intCast(i_param + 1), .concise_type, .sbigint) catch return apd.getLastError();
-                ipd.setField(@intCast(i_param + 1), .concise_type, .bigint) catch return ipd.getLastError();
+                var data = [_]i32{ 42, 66 };
+                apd.setField(@intCast(i_param + 1), .concise_type, .slong) catch return apd.getLastError();
+                ipd.setField(@intCast(i_param + 1), .concise_type, .integer) catch return ipd.getLastError();
                 apd.setField(@intCast(i_param + 1), .indicator_ptr, @ptrCast(&ind)) catch return apd.getLastError();
                 apd.setField(@intCast(i_param + 1), .data_ptr, @ptrCast(&data)) catch return apd.getLastError();
                 ipd.setField(@intCast(i_param + 1), .parameter_type, .input) catch return ipd.getLastError();
-                std.debug.print("heyend\n", .{});
                 stmt.setStmtAttr(.ss_param_focus, 0) catch |err| return utils.odbcErrToPy(stmt, "SetStmtAttr", err, null);
 
                 continue;
@@ -462,40 +435,48 @@ pub fn bindParams(
             param.ind = @intCast(buf.len);
         }
 
-        try apd.setField(@intCast(i_param + 1), .concise_type, param.c_type);
-        try ipd.setField(@intCast(i_param + 1), .concise_type, param.sql_type);
+        // Diff with put_arrow: ind slice vs scalar, no bytes_fixed, data slice vs ptr
+        const coln: u15 = @intCast(i_param + 1);
+        const thread_state = null;
+        apd.setField(coln, .concise_type, param.c_type) catch |err| return utils.odbcErrToPy(apd, "SetDescField", err, thread_state);
+        ipd.setField(coln, .concise_type, param.sql_type) catch |err| return utils.odbcErrToPy(ipd, "SetDescField", err, thread_state);
 
-        if (param.dec_info) |dec_info| {
-            try ipd.setField(@intCast(i_param + 1), .precision, dec_info.precision);
-            try ipd.setField(@intCast(i_param + 1), .scale, dec_info.scale);
-            try apd.setField(@intCast(i_param + 1), .precision, dec_info.precision);
-            try apd.setField(@intCast(i_param + 1), .scale, dec_info.scale);
+        switch (param.misc) {
+            .dt => |info| {
+                if (param.c_type == .char) {
+                    apd.setField(coln, .length, info.strlen) catch |err| return utils.odbcErrToPy(apd, "SetDescField", err, thread_state);
+                    apd.setField(coln, .octet_length, info.strlen) catch |err| return utils.odbcErrToPy(apd, "SetDescField", err, thread_state);
+                    apd.setField(coln, .octet_length_ptr, @ptrCast(&param.ind)) catch |err| return utils.odbcErrToPy(apd, "SetDescField", err, thread_state);
+                } else {
+                    apd.setField(coln, .precision, info.prec) catch |err| return utils.odbcErrToPy(apd, "SetDescField", err, thread_state);
+                    apd.setField(coln, .scale, info.prec) catch |err| return utils.odbcErrToPy(apd, "SetDescField", err, thread_state);
+                }
+                ipd.setField(coln, .datetime_interval_precision, info.strlen) catch |err| return utils.odbcErrToPy(ipd, "SetDescField", err, thread_state);
+                ipd.setField(coln, .precision, info.prec) catch |err| return utils.odbcErrToPy(ipd, "SetDescField", err, thread_state);
+                ipd.setField(coln, .scale, info.prec) catch |err| return utils.odbcErrToPy(ipd, "SetDescField", err, thread_state);
+            },
+            .dec => |info| {
+                ipd.setField(coln, .precision, info.precision) catch |err| return utils.odbcErrToPy(ipd, "SetDescField", err, thread_state);
+                ipd.setField(coln, .scale, info.scale) catch |err| return utils.odbcErrToPy(ipd, "SetDescField", err, thread_state);
+                apd.setField(coln, .precision, info.precision) catch |err| return utils.odbcErrToPy(apd, "SetDescField", err, thread_state);
+                apd.setField(coln, .scale, info.scale) catch |err| return utils.odbcErrToPy(apd, "SetDescField", err, thread_state);
+            },
+            .varsize => {
+                ipd.setField(coln, .precision, 0) catch |err| return utils.odbcErrToPy(ipd, "SetDescField", err, thread_state);
+                ipd.setField(coln, .length, 0) catch |err| return utils.odbcErrToPy(ipd, "SetDescField", err, thread_state);
+                apd.setField(coln, .octet_length, 0) catch |err| return utils.odbcErrToPy(apd, "SetDescField", err, thread_state);
+                apd.setField(coln, .octet_length_ptr, @ptrCast(&param.ind)) catch |err| return utils.odbcErrToPy(apd, "SetDescField", err, thread_state);
+            },
+            .noinfo => {},
+            .arrow_tvp => {},
         }
-        if (param.dt_info) |dt_info| {
-            if (dt_info.isstr) {
-                try apd.setField(@intCast(i_param + 1), .length, dt_info.strlen);
-                try apd.setField(@intCast(i_param + 1), .octet_length, dt_info.strlen);
-                try apd.setField(@intCast(i_param + 1), .octet_length_ptr, @ptrCast(&param.ind));
-            } else {
-                try apd.setField(@intCast(i_param + 1), .precision, dt_info.prec);
-                try apd.setField(@intCast(i_param + 1), .scale, dt_info.prec);
-            }
-            try ipd.setField(@intCast(i_param + 1), .datetime_interval_precision, dt_info.strlen);
-            try ipd.setField(@intCast(i_param + 1), .precision, dt_info.prec);
-            try ipd.setField(@intCast(i_param + 1), .scale, dt_info.prec);
-        } else if (param.c_type == .wchar or param.c_type == .binary or param.c_type == .char) {
-            // send as (n)var..(max) for now
-            const len = 0;
-            try ipd.setField(@intCast(i_param + 1), .precision, @intCast(len));
-            try ipd.setField(@intCast(i_param + 1), .length, @intCast(len));
-            try apd.setField(@intCast(i_param + 1), .octet_length_ptr, @ptrCast(&param.ind));
+
+        apd.setField(coln, .indicator_ptr, @ptrCast(&param.ind)) catch |err| return utils.odbcErrToPy(apd, "SetDescField", err, thread_state);
+        if (param.data) |d| {
+            apd.setField(coln, .data_ptr, d.ptr) catch |err| return utils.odbcErrToPy(apd, "SetDescField", err, thread_state);
         }
-        try apd.setField(@intCast(i_param + 1), .indicator_ptr, @ptrCast(&param.ind));
-        if (param.data) |buf| {
-            // validation is performed here
-            apd.setField(@intCast(i_param + 1), .data_ptr, buf.ptr) catch return apd.getLastError();
-        }
-        try ipd.setField(@intCast(i_param + 1), .parameter_type, .input);
+        ipd.setField(coln, .parameter_type, .input) catch |err| return utils.odbcErrToPy(ipd, "SetDescField", err, thread_state);
+
         if (py_param_name) |pn| {
             var len: isize = 0;
             const name = c.PyUnicode_AsUTF8AndSize(pn, &len) orelse return error.PyErr;

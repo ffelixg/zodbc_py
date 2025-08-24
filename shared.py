@@ -1,13 +1,12 @@
 class ArrowTVPType:
-    def from_name(table: str, schema: str | None = None) -> "ArrowTVP":
+    def from_name(table_name: str, schema_name: str | None = None) -> "ArrowTVP":
         self = ArrowTVPType()
-        if schema is None:
-            self.name = table
-        else:
-            self.name = f"{schema}.{table}"
+        self.table_name = table_name
+        self.schema_name = schema_name
         return self
 
 class ArrowTVP:
-    def __init__(self, T: ArrowTVPType, data: "pyarrow.RecordBatch"):
+    def __init__(self, T: ArrowTVPType, batch: "pyarrow.RecordBatch"):
         self._type = T
-        self._data = data
+        self._batch = batch
+        self._batch_schema, self._batch_array = batch.__arrow_c_array__()

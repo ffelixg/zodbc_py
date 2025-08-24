@@ -1,4 +1,5 @@
 const std = @import("std");
+const py = @import("py");
 pub const ally = std.heap.raw_c_allocator;
 
 pub const ArrowSchema = extern struct {
@@ -56,3 +57,19 @@ pub const ArrowArray = extern struct {
     // Opaque producer-specific data, must be pointer sized
     private_data: ?*anyopaque = null,
 };
+
+pub const SchemaCapsule = py.PyCapsule(ArrowSchema, "arrow_schema", &struct {
+    fn deinit(self: *ArrowSchema) callconv(.c) void {
+        _ = self;
+        // if (self.release) |release|
+        //     release(self);
+    }
+}.deinit);
+
+pub const ArrayCapsule = py.PyCapsule(ArrowArray, "arrow_array", &struct {
+    fn deinit(self: *ArrowArray) callconv(.c) void {
+        _ = self;
+        // if (self.release) |release|
+        //     release(self);
+    }
+}.deinit);

@@ -8,6 +8,14 @@ const fmt = @import("fmt.zig");
 
 const CDataType = zodbc.odbc.types.CDataType;
 
+const DAEInfo = struct {
+    /// 0 for executemany, number of column for TVPs
+    i_param: usize,
+
+    i_col: usize,
+    i_row: usize,
+};
+
 const Param = struct {
     c_type: zodbc.odbc.types.CDataType,
     sql_type: zodbc.odbc.types.SQLDataType,
@@ -36,7 +44,7 @@ pub fn deinitParams(params: *ParamList, len: usize, ally: std.mem.Allocator) voi
                 }
             },
             .borrowed => {},
-            .dae_u, .dae_z, .dae_U, .dae_Z => ally.destroy(@as(*usize, @ptrCast(@alignCast(param.data.?)))),
+            .dae_u, .dae_z, .dae_U, .dae_Z => ally.destroy(@as(*DAEInfo, @ptrCast(@alignCast(param.data.?)))),
         }
         ally.free(param.ind);
     }
@@ -167,8 +175,12 @@ inline fn fromString(
                     i.* = zodbc.c.SQL_DATA_AT_EXEC;
                 }
             }
-            const buf = try ally.create(usize);
-            buf.* = i_param;
+            const buf = try ally.create(DAEInfo);
+            buf.* = .{
+                .i_param = 0,
+                .i_col = i_param,
+                .i_row = 0,
+            };
             return Param{
                 .c_type = c_type,
                 .sql_type = sql_type,
@@ -418,6 +430,44 @@ fn bind(
     ipd.setField(coln, .parameter_type, .input) catch |err| return utils.odbcErrToPy(ipd, "SetDescField", err, thread_state);
 }
 
+pub fn bindBatch(
+    stmt: zodbc.Statement,
+    ipd: zodbc.Descriptor.ImpParamDesc,
+    apd: zodbc.Descriptor.AppParamDesc,
+    query: []const u8,
+    prepared: *bool,
+    batch_schema: *arrow.ArrowSchema,
+    batch_array: *arrow.ArrowArray,
+    ally: std.mem.Allocator,
+    thread_state: *?*c.PyThreadState,
+) !ParamList {
+    const n_params: usize = @intCast(batch_array.n_children);
+    var param_list: ParamList = try .initCapacity(ally, n_params);
+    errdefer deinitParams(&param_list, @intCast(batch_array.length), ally);
+
+    for (0..n_params) |i_param| {
+        const fmt_str = std.mem.span(batch_schema.children.?[i_param].*.format);
+        const param = fromString(
+            fmt_str,
+            batch_array.children.?[i_param].*,
+            stmt,
+            query,
+            prepared,
+            thread_state,
+            i_param,
+            ally,
+        ) catch |err| switch (err) {
+            error.UnrecognizedArrowFormat => return utils.raise(.ValueError, "Unrecognized Arrow format string: {s}", .{fmt_str}, thread_state),
+            error.PyErr => return error.PyErr,
+            error.OutOfMemory => return error.OutOfMemory,
+        };
+        param_list.appendAssumeCapacity(param);
+        try bind(i_param, param, apd, ipd, thread_state);
+    }
+
+    return param_list;
+}
+
 pub fn executeMany(
     stmt: zodbc.Statement,
     query: []const u8,
@@ -430,33 +480,23 @@ pub fn executeMany(
     const n_params: usize = @intCast(batch_array.n_children);
     std.debug.assert(batch_schema.n_children == n_params);
 
-    var param_list: ParamList = try .initCapacity(ally, n_params);
-    defer deinitParams(&param_list, @intCast(batch_array.length), ally);
-
     const apd = zodbc.Descriptor.AppParamDesc.fromStatement(stmt) catch |err| return utils.odbcErrToPy(stmt, "GetStmtAttr", err, thread_state);
     const ipd = zodbc.Descriptor.ImpParamDesc.fromStatement(stmt) catch |err| return utils.odbcErrToPy(stmt, "GetStmtAttr", err, thread_state);
 
     apd.setField(0, .count, @intCast(n_params)) catch |err| return utils.odbcErrToPy(apd, "SetDescField", err, thread_state);
 
-    for (0..n_params) |i_param| {
-        const fmt_str = std.mem.span(batch_schema.children.?[i_param].*.format);
-        const param = fromString(
-            fmt_str,
-            batch_array.children.?[i_param].*,
-            stmt,
-            query,
-            &prepared,
-            thread_state,
-            i_param,
-            ally,
-        ) catch |err| switch (err) {
-            error.UnrecognizedArrowFormat => return utils.raise(.ValueError, "Unrecognized Arrow format string: {s}", .{fmt_str}, thread_state),
-            error.PyErr => return error.PyErr,
-            error.OutOfMemory => return error.OutOfMemory,
-        };
-        param_list.appendAssumeCapacity(param);
-        try bind(i_param, param, apd, ipd, thread_state);
-    }
+    var param_list = try bindBatch(
+        stmt,
+        ipd,
+        apd,
+        query,
+        &prepared,
+        batch_schema,
+        batch_array,
+        ally,
+        thread_state,
+    );
+    defer deinitParams(&param_list, @intCast(batch_array.length), ally);
 
     apd.setField(0, .array_size, @intCast(batch_array.length)) catch |err| return utils.odbcErrToPy(apd, "SetDescField", err, thread_state);
     var rows_processed: u64 = 0;
@@ -479,11 +519,17 @@ pub fn executeMany(
     if (!need_data) return;
     var u16_buf = try ally.alloc(u16, 4000);
     defer ally.free(u16_buf);
-    while (stmt.paramData(usize) catch |err| {
+    while (stmt.paramData(DAEInfo) catch |err| {
         return utils.odbcErrToPy(stmt, "ParamData", err, thread_state);
-    }) |i_param| {
-        const param = param_list.items[i_param.*];
-        const array = batch_array.children.?[i_param.*].*;
+    }) |dae_info| {
+        defer dae_info.i_row += 1;
+        const param = param_list.items[dae_info.i_col];
+        while (param.ind[dae_info.i_row] != zodbc.c.SQL_DATA_AT_EXEC) {
+            dae_info.i_row += 1;
+            std.debug.assert(dae_info.i_row < batch_array.length);
+        }
+        std.debug.assert(rows_processed == dae_info.i_row + 1);
+        const array = batch_array.children.?[dae_info.i_col].*;
         const data_buf = array.buffers[2].?;
 
         switch (param.ownership) {
@@ -493,7 +539,7 @@ pub fn executeMany(
                     .dae_U, .dae_Z => u64,
                     else => comptime unreachable,
                 }, array, true);
-                const data = data_buf[values[rows_processed - 1]..values[rows_processed]];
+                const data = data_buf[values[dae_info.i_row]..values[dae_info.i_row + 1]];
                 switch (comptime dae) {
                     .dae_u, .dae_U => {
                         if (data.len >= u16_buf.len) {
@@ -503,7 +549,7 @@ pub fn executeMany(
                             return utils.raise(
                                 .ValueError,
                                 "Failed to convert utf8 to utf16le in column {} line {}",
-                                .{ i_param, rows_processed - 1 },
+                                .{ dae_info.i_col, dae_info.i_row },
                                 thread_state,
                             );
                         stmt.putData(@ptrCast(u16_buf[0..len])) catch |err|

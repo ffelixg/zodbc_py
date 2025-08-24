@@ -478,21 +478,6 @@ pub fn cancel(cur_obj: Obj) !void {
     };
 }
 
-const SchemaCapsule = py.PyCapsule(arrow.ArrowSchema, "arrow_schema", &struct {
-    fn deinit(self: *arrow.ArrowSchema) callconv(.c) void {
-        _ = self;
-        // if (self.release) |release|
-        //     release(self);
-    }
-}.deinit);
-const ArrayCapsule = py.PyCapsule(arrow.ArrowArray, "arrow_array", &struct {
-    fn deinit(self: *arrow.ArrowArray) callconv(.c) void {
-        _ = self;
-        // if (self.release) |release|
-        //     release(self);
-    }
-}.deinit);
-
 pub fn arrow_batch(cur_obj: Obj, n_rows: usize) !struct { Obj, Obj } {
     const cur = try StmtCapsule.read_capsule(cur_obj);
     if (cur.result_set == null) {
@@ -508,14 +493,14 @@ pub fn arrow_batch(cur_obj: Obj, n_rows: usize) !struct { Obj, Obj } {
     );
 
     return .{
-        try SchemaCapsule.create_capsule(schema),
-        try ArrayCapsule.create_capsule(array),
+        try arrow.SchemaCapsule.create_capsule(schema),
+        try arrow.ArrayCapsule.create_capsule(array),
     };
 }
 
 pub fn executemany_arrow(cur_obj: Obj, query: []const u8, schema_caps: Obj, array_caps: Obj) !void {
-    const schema_batch = try SchemaCapsule.read_capsule(schema_caps);
-    const array_batch = try ArrayCapsule.read_capsule(array_caps);
+    const schema_batch = try arrow.SchemaCapsule.read_capsule(schema_caps);
+    const array_batch = try arrow.ArrayCapsule.read_capsule(array_caps);
 
     const cur = try StmtCapsule.read_capsule(cur_obj);
     if (cur.result_set) |*result_set| {
