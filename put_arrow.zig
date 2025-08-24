@@ -8,7 +8,7 @@ const fmt = @import("fmt.zig");
 
 const CDataType = zodbc.odbc.types.CDataType;
 
-const DAEInfo = struct {
+pub const DAEInfo = struct {
     /// 0 for executemany, number of column for TVPs
     i_param: usize,
 
@@ -16,7 +16,7 @@ const DAEInfo = struct {
     i_row: usize,
 };
 
-const Param = struct {
+pub const Param = struct {
     c_type: zodbc.odbc.types.CDataType,
     sql_type: zodbc.odbc.types.SQLDataType,
     ind: []i64,
@@ -31,7 +31,7 @@ const Param = struct {
     } = .noinfo,
 };
 
-const ParamList = std.ArrayListUnmanaged(Param);
+pub const ParamList = std.ArrayListUnmanaged(Param);
 
 pub fn deinitParams(params: *ParamList, len: usize, ally: std.mem.Allocator) void {
     for (params.items) |param| {
