@@ -396,7 +396,7 @@ pub fn bindParams(
                 defer allocator.free(name_16);
 
                 // std.debug.print("hey\n", .{});
-                var nr_rows: i64 = 1;
+                var nr_rows: i64 = 2;
                 if (0 != zodbc.c.SQLBindParameter(
                     stmt.handle(),
                     @intCast(i_param + 1),
@@ -420,10 +420,11 @@ pub fn bindParams(
                 //     @intCast(i_param + 1),
                 // ) catch return stmt.getLastError()});
 
-                try ipd.setField(@intCast(i_param + 1), .length, 1);
-                try ipd.setField(@intCast(i_param + 1), .precision, 1);
+                try ipd.setFieldString(@intCast(i_param + 1), .ss_type_name, name);
+                // try ipd.setField(@intCast(i_param + 1), .length, 1);
+                // try ipd.setField(@intCast(i_param + 1), .precision, 1);
                 // try ipd.setField(@intCast(i_param + 1), ., value: FieldType(field, .imp_param_desc))
-                var idk: [10]u8 = undefined;
+                var idk: [10]i32 = undefined;
                 try apd.setField(@intCast(i_param + 1), .data_ptr, @ptrCast(&idk));
                 std.debug.print("hey2\n", .{});
 
@@ -434,7 +435,7 @@ pub fn bindParams(
                 // ) catch return stmt.getLastError()});
 
                 // stmt.setStmtAttr(.ss_param_focus, @intCast(0)) catch return stmt.getLastError();
-                stmt.setStmtAttr(.ss_param_focus, @intCast(i_param + 1)) catch |err| return utils.odbcErrToPy(stmt, "SetStmtAttr", err);
+                stmt.setStmtAttr(.ss_param_focus, @intCast(i_param + 1)) catch |err| return utils.odbcErrToPy(stmt, "SetStmtAttr", err, null);
                 // stmt.setStmtAttr(.ss_param_focus, @intCast(i_param + 1)) catch |err| {
                 //     std.debug.print("Error {any} setting ss_param_focus to {}\n", .{ err, i_param + 1 });
                 //     std.debug.print("Focus: {any}\n", .{try stmt.getStmtAttr(.ss_param_focus)});
@@ -442,14 +443,15 @@ pub fn bindParams(
                 // };
                 std.debug.print("hey3\n", .{});
 
-                apd.setField(@intCast(i_param + 1), .concise_type, .slong) catch return apd.getLastError();
-                ipd.setField(@intCast(i_param + 1), .concise_type, .integer) catch return ipd.getLastError();
                 var ind: i64 = 0;
-                var data = "\x00\x00\x00\x42";
+                var data = [_]i64{ 42, 66 };
+                apd.setField(@intCast(i_param + 1), .concise_type, .sbigint) catch return apd.getLastError();
+                ipd.setField(@intCast(i_param + 1), .concise_type, .bigint) catch return ipd.getLastError();
                 apd.setField(@intCast(i_param + 1), .indicator_ptr, @ptrCast(&ind)) catch return apd.getLastError();
                 apd.setField(@intCast(i_param + 1), .data_ptr, @ptrCast(&data)) catch return apd.getLastError();
                 ipd.setField(@intCast(i_param + 1), .parameter_type, .input) catch return ipd.getLastError();
                 std.debug.print("heyend\n", .{});
+                stmt.setStmtAttr(.ss_param_focus, 0) catch |err| return utils.odbcErrToPy(stmt, "SetStmtAttr", err, null);
 
                 continue;
             },

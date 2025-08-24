@@ -1,6 +1,7 @@
 import _zodbc
 import typing
 from enum import IntEnum
+from shared import ArrowTVPType, ArrowTVP
 
 class Datetime2_7_Fetch(IntEnum):
     micro = 1
