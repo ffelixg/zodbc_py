@@ -5,51 +5,12 @@ const zeit = @import("zeit");
 const c = @import("c");
 const utils = @import("utils.zig");
 const fmt = @import("fmt.zig");
+const Param = @import("put_common.zig").Param;
+const ParamList = @import("put_common.zig").ParamList;
+const DAEInfo = @import("put_common.zig").DAEInfo;
+const deinitParams = @import("put_common.zig").deinitParams;
 
 const CDataType = zodbc.odbc.types.CDataType;
-
-pub const DAEInfo = struct {
-    /// 0 for executemany, number of column for TVPs
-    i_param: usize,
-
-    i_col: usize,
-    i_row: usize,
-};
-
-pub const Param = struct {
-    c_type: zodbc.odbc.types.CDataType,
-    sql_type: zodbc.odbc.types.SQLDataType,
-    ind: []i64,
-    data: ?[*]u8,
-    ownership: enum { owned, borrowed, dae_u, dae_z, dae_U, dae_Z },
-    misc: union(enum) {
-        dt: struct { strlen: u7, prec: u7, isstr: bool },
-        dec: struct { precision: u8, scale: i8 },
-        bytes_fixed: u31,
-        varsize: void,
-        noinfo: void,
-    } = .noinfo,
-};
-
-pub const ParamList = std.ArrayListUnmanaged(Param);
-
-pub fn deinitParams(params: *ParamList, len: usize, ally: std.mem.Allocator) void {
-    for (params.items) |param| {
-        switch (param.ownership) {
-            .owned => {
-                if (param.misc == .dt and param.misc.dt.isstr) {
-                    ally.free(param.data.?[0 .. len * param.misc.dt.strlen]);
-                } else {
-                    param.c_type.free(ally, param.data.?[0 .. len * param.c_type.sizeOf()]);
-                }
-            },
-            .borrowed => {},
-            .dae_u, .dae_z, .dae_U, .dae_Z => ally.destroy(@as(*DAEInfo, @ptrCast(@alignCast(param.data.?)))),
-        }
-        ally.free(param.ind);
-    }
-    params.deinit(ally);
-}
 
 inline fn arrowBufferCast(T: type, array: arrow.ArrowArray, is_var: bool) []T {
     return @as([*]T, @alignCast(@ptrCast(array.buffers[1].?)))[0..@intCast(array.length + if (is_var) 1 else 0)];
@@ -107,7 +68,7 @@ inline fn fromString(
                 .c_type = .bit,
                 .sql_type = .bit,
                 .ind = ind,
-                .data = @ptrCast(buf.ptr),
+                .data = @ptrCast(buf),
                 .ownership = .owned,
             };
         },
@@ -139,7 +100,7 @@ inline fn fromString(
                 .c_type = c_type,
                 .sql_type = sql_type,
                 .ind = ind,
-                .data = array.buffers[1],
+                .data = array.buffers[1].?[0..@intCast(array.length * comptime zodbc.odbc.types.CDataType.sizeOf(c_type))],
                 .ownership = .borrowed,
             };
         },
@@ -154,7 +115,7 @@ inline fn fromString(
                 .c_type = .float,
                 .sql_type = .real,
                 .ind = ind,
-                .data = @ptrCast(buf.ptr),
+                .data = @ptrCast(buf),
                 .ownership = .owned,
             };
         },
@@ -185,7 +146,8 @@ inline fn fromString(
                 .c_type = c_type,
                 .sql_type = sql_type,
                 .ind = ind,
-                .data = @ptrCast(buf),
+                // TODO can be done nicer in 0.15
+                .data = @ptrCast(@as([*]DAEInfo, @ptrCast(buf))[0..1]),
                 .ownership = ownership,
                 .misc = .{ .varsize = {} },
             };
@@ -202,7 +164,7 @@ inline fn fromString(
                 .c_type = .binary,
                 .sql_type = .binary,
                 .ind = ind,
-                .data = array.buffers[1],
+                .data = array.buffers[1].?[0..@intCast(array.length * comptime zodbc.odbc.types.CDataType.sizeOf(.binary))],
                 .ownership = .borrowed,
                 .misc = .{ .bytes_fixed = width },
             };
@@ -231,7 +193,7 @@ inline fn fromString(
                 .c_type = .numeric,
                 .sql_type = .numeric,
                 .ind = ind,
-                .data = @ptrCast(buf.ptr),
+                .data = @ptrCast(buf),
                 .ownership = .owned,
                 .misc = .{ .dec = .{ .precision = precision_int, .scale = scale_int } },
             };
@@ -279,7 +241,7 @@ inline fn fromString(
                 .c_type = .char,
                 .sql_type = .type_time,
                 .ind = ind,
-                .data = @ptrCast(data.ptr),
+                .data = @ptrCast(data),
                 .ownership = .owned,
                 .misc = .{ .dt = .{ .isstr = true, .prec = precision, .strlen = @sizeOf(T) } },
             };
@@ -346,7 +308,7 @@ inline fn fromString(
                 .c_type = type_enum,
                 .sql_type = type_enum,
                 .ind = ind,
-                .data = @ptrCast(buf.ptr),
+                .data = @ptrCast(buf),
                 .ownership = .owned,
                 .misc = .{ .dt = .{ .isstr = false, .prec = precision, .strlen = strlen } },
             };
@@ -420,12 +382,13 @@ fn bind(
             apd.setField(coln, .octet_length, 0) catch |err| return utils.odbcErrToPy(apd, "SetDescField", err, thread_state);
             apd.setField(coln, .octet_length_ptr, param.ind.ptr) catch |err| return utils.odbcErrToPy(apd, "SetDescField", err, thread_state);
         },
+        .arrow_tvp => unreachable, // TODO
         .noinfo => {},
     }
 
     apd.setField(coln, .indicator_ptr, param.ind.ptr) catch |err| return utils.odbcErrToPy(apd, "SetDescField", err, thread_state);
     if (param.data) |d| {
-        apd.setField(coln, .data_ptr, d) catch |err| return utils.odbcErrToPy(apd, "SetDescField", err, thread_state);
+        apd.setField(coln, .data_ptr, d.ptr) catch |err| return utils.odbcErrToPy(apd, "SetDescField", err, thread_state);
     }
     ipd.setField(coln, .parameter_type, .input) catch |err| return utils.odbcErrToPy(ipd, "SetDescField", err, thread_state);
 }
@@ -443,7 +406,7 @@ pub fn bindBatch(
 ) !ParamList {
     const n_params: usize = @intCast(batch_array.n_children);
     var param_list: ParamList = try .initCapacity(ally, n_params);
-    errdefer deinitParams(&param_list, @intCast(batch_array.length), ally);
+    errdefer deinitParams(&param_list, ally);
 
     for (0..n_params) |i_param| {
         const fmt_str = std.mem.span(batch_schema.children.?[i_param].*.format);
@@ -496,7 +459,7 @@ pub fn executeMany(
         ally,
         thread_state,
     );
-    defer deinitParams(&param_list, @intCast(batch_array.length), ally);
+    defer deinitParams(&param_list, ally);
 
     apd.setField(0, .array_size, @intCast(batch_array.length)) catch |err| return utils.odbcErrToPy(apd, "SetDescField", err, thread_state);
     var rows_processed: u64 = 0;

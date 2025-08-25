@@ -9,6 +9,10 @@ const utils = @import("utils.zig");
 const fmt = @import("fmt.zig");
 const arrow = @import("arrow.zig");
 const put_arrow = @import("put_arrow.zig");
+const Param = @import("put_common.zig").Param;
+const ParamList = @import("put_common.zig").ParamList;
+const DAEInfo = @import("put_common.zig").DAEInfo;
+const deinitParams = @import("put_common.zig").deinitParams;
 
 pub const Conv = enum {
     wchar,
@@ -70,60 +74,6 @@ fn createOdbcVal(
     return buf;
 }
 
-const ParamList = std.ArrayListUnmanaged(struct {
-    c_type: zodbc.odbc.types.CDataType,
-    sql_type: zodbc.odbc.types.SQLDataType,
-    ind: i64 = zodbc.c.SQL_NULL_DATA,
-    data: ?[]u8,
-    misc: union(enum) {
-        dt: struct {
-            strlen: u7,
-            prec: u7,
-            isstr: bool,
-        },
-        dec: struct {
-            precision: u8,
-            scale: i8,
-        },
-        arrow_tvp: struct {
-            schema_caps: Obj,
-            array_caps: Obj,
-            batch_schema: *arrow.ArrowSchema,
-            batch_array: *arrow.ArrowArray,
-            schema_name: ?[]u8,
-            table_name: []u8,
-            param_list: ?put_arrow.ParamList,
-        },
-        varsize: void,
-        noinfo: void,
-    } = .noinfo,
-
-    pub fn deinit(self: @This(), ally: std.mem.Allocator) void {
-        if (self.data) |buf| self.c_type.free(ally, buf);
-        switch (self.misc) {
-            .arrow_tvp => |arrow_tvp| {
-                c.Py_DECREF(arrow_tvp.schema_caps);
-                c.Py_DECREF(arrow_tvp.array_caps);
-                if (arrow_tvp.schema_name) |s| {
-                    ally.free(s);
-                }
-                ally.free(arrow_tvp.table_name);
-                if (arrow_tvp.param_list) |*pl| {
-                    put_arrow.deinitParams(@constCast(pl), @intCast(arrow_tvp.batch_array.length), ally);
-                }
-            },
-            else => {},
-        }
-    }
-});
-
-pub fn deinitParams(params: *ParamList, allocator: std.mem.Allocator) void {
-    for (params.items) |param| {
-        param.deinit(allocator);
-    }
-    params.deinit(allocator);
-}
-
 pub fn bindParams(
     stmt: zodbc.Statement,
     py_params: Obj,
@@ -183,14 +133,18 @@ pub fn bindParams(
             else => unreachable,
         };
 
+        const ind = try allocator.alloc(i64, 1);
+        errdefer allocator.free(ind);
+        ind[0] = zodbc.c.SQL_NULL_DATA;
+
         if (is_null) {
             try utils.ensurePrepared(stmt, prepared, query, null);
 
             params.appendAssumeCapacity(.{
                 .c_type = undefined,
                 .sql_type = undefined,
+                .ind = ind,
                 .data = null,
-                .ind = zodbc.c.SQL_NULL_DATA,
             });
 
             const TP = @typeInfo(@typeInfo(@TypeOf(zodbc.Statement.describeParam)).@"fn".return_type.?).error_union.payload;
@@ -207,7 +161,7 @@ pub fn bindParams(
             ) catch |err| return utils.odbcErrToPy(ipd, "SetDescField", err, null);
 
             try ipd.setField(@intCast(i_param + 1), .parameter_type, .input);
-            try apd.setField(@intCast(i_param + 1), .indicator_ptr, @ptrCast(&params.items[i_param].ind));
+            try apd.setField(@intCast(i_param + 1), .indicator_ptr, params.items[i_param].ind.ptr);
 
             continue;
         }
@@ -217,6 +171,7 @@ pub fn bindParams(
             .wchar => .{
                 .c_type = .wchar,
                 .sql_type = .wvarchar,
+                .ind = ind,
                 .data = if (is_null) null else blk: {
                     var size: c.Py_ssize_t = -1;
                     const char_ptr = c.PyUnicode_AsUTF8AndSize(
@@ -236,6 +191,7 @@ pub fn bindParams(
             .binary => .{
                 .c_type = .binary,
                 .sql_type = .varbinary,
+                .ind = ind,
                 .data = if (is_null) null else blk: {
                     var ptr: [*c]u8 = null;
                     var size: c.Py_ssize_t = -1;
@@ -250,6 +206,7 @@ pub fn bindParams(
             .slong => .{
                 .c_type = .slong,
                 .sql_type = .integer,
+                .ind = ind,
                 .data = if (is_null) null else try createOdbcVal(
                     allocator,
                     .slong,
@@ -259,6 +216,7 @@ pub fn bindParams(
             .sbigint => .{
                 .c_type = .sbigint,
                 .sql_type = .bigint,
+                .ind = ind,
                 .data = if (is_null) null else try createOdbcVal(
                     allocator,
                     .sbigint,
@@ -268,6 +226,7 @@ pub fn bindParams(
             .double => .{
                 .c_type = .double,
                 .sql_type = .double,
+                .ind = ind,
                 .data = if (is_null) null else try createOdbcVal(
                     allocator,
                     .double,
@@ -277,6 +236,7 @@ pub fn bindParams(
             .bit => .{
                 .c_type = .bit,
                 .sql_type = .bit,
+                .ind = ind,
                 .data = if (is_null) null else try createOdbcVal(
                     allocator,
                     .bit,
@@ -295,6 +255,7 @@ pub fn bindParams(
                 break :blk .{
                     .c_type = .numeric,
                     .sql_type = .numeric,
+                    .ind = ind,
                     .data = if (is_null) null else try createOdbcVal(
                         allocator,
                         .numeric,
@@ -309,6 +270,7 @@ pub fn bindParams(
             .guid => .{
                 .c_type = .guid,
                 .sql_type = .guid,
+                .ind = ind,
                 .data = if (is_null) null else blk: {
                     const py_bytes = c.PyObject_GetAttrString(
                         py_val,
@@ -332,6 +294,7 @@ pub fn bindParams(
             .type_date => .{
                 .c_type = .type_date,
                 .sql_type = .type_date,
+                .ind = ind,
                 .data = if (is_null) null else try createOdbcVal(
                     allocator,
                     .type_date,
@@ -346,6 +309,7 @@ pub fn bindParams(
             .type_time_string => .{
                 .c_type = .char,
                 .sql_type = .type_time,
+                .ind = ind,
                 .data = if (is_null) null else blk: {
                     const val = try utils.attrsToStruct(struct {
                         hour: u8,
@@ -371,6 +335,7 @@ pub fn bindParams(
             .type_timestamp => .{
                 .c_type = .type_timestamp,
                 .sql_type = .type_timestamp,
+                .ind = ind,
                 .data = if (is_null) null else blk: {
                     const val = try utils.attrsToStruct(struct {
                         year: u15,
@@ -430,11 +395,12 @@ pub fn bindParams(
                 const batch_array = try arrow.ArrayCapsule.read_capsule(array_caps);
 
                 std.debug.assert(batch_schema.n_children == batch_array.n_children);
+                ind[0] = batch_array.length;
 
                 break :blk .{
                     .c_type = .binary,
                     .sql_type = .ss_table,
-                    .ind = batch_array.length,
+                    .ind = ind,
                     .data = null,
                     .misc = .{ .arrow_tvp = .{
                         .schema_caps = schema_caps,
@@ -451,7 +417,7 @@ pub fn bindParams(
 
         const param = &params.items[i_param];
         if (param.data) |buf| {
-            param.ind = @intCast(buf.len);
+            param.ind[0] = @intCast(buf.len);
         }
 
         // Diff with put_arrow: ind slice vs scalar, no bytes_fixed, data slice vs ptr
@@ -480,6 +446,7 @@ pub fn bindParams(
             },
             .varsize => .{ 0, 0, 0 },
             .noinfo => .{ 0, 0, 0 },
+            .bytes_fixed => unreachable, // TODO
             .arrow_tvp => |info| .{ @intCast(info.batch_array.n_children), 0, 0 },
         };
         stmt.bindParameter(
@@ -491,7 +458,7 @@ pub fn bindParams(
             decimal_digits,
             if (param.data) |d| d.ptr else null,
             apd_length,
-            @ptrCast(&param.ind),
+            param.ind.ptr,
         ) catch |err| return utils.odbcErrToPy(stmt, "BindParameter", err, thread_state);
 
         switch (param.misc) {

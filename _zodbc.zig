@@ -9,6 +9,7 @@ const put_py = @import("put_py.zig");
 const fetch_py = FetchPy.fetch_py;
 const FetchArrow = @import("fetch_arrow.zig");
 const put_arrow = @import("put_arrow.zig");
+const put_common = @import("put_common.zig");
 const arrow = @import("arrow.zig");
 const c = py.py;
 const Obj = *c.PyObject;
@@ -271,7 +272,7 @@ pub fn execute(cur_obj: Obj, query: []const u8, py_params: Obj) !void {
         &prepared,
         query,
     );
-    defer put_py.deinitParams(&params, cur.env_con.ally);
+    defer put_common.deinitParams(&params, cur.env_con.ally);
     errdefer if (params.items.len > 0) cur.stmt.free(.reset_params) catch {};
 
     var thread_state = c.PyEval_SaveThread();
