@@ -9,6 +9,7 @@ const Param = @import("put_common.zig").Param;
 const ParamList = @import("put_common.zig").ParamList;
 const DAEInfo = @import("put_common.zig").DAEInfo;
 const deinitParams = @import("put_common.zig").deinitParams;
+const bindList = @import("put_common.zig").bindList;
 
 const CDataType = zodbc.odbc.types.CDataType;
 
@@ -208,7 +209,7 @@ inline fn fromString(
                 .sql_type = desc.sql_type,
                 .ind = ind,
                 .data = null,
-                .ownership = .borrowed,
+                .misc = .null,
             };
         },
         inline prepSwitch("ttu"),
@@ -340,63 +341,8 @@ inline fn fromString(
     }
 }
 
-fn bind(
-    i_param: usize,
-    param: Param,
-    apd: zodbc.Descriptor.AppParamDesc,
-    ipd: zodbc.Descriptor.ImpParamDesc,
-    thread_state: *?*c.PyThreadState,
-) !void {
-    const coln: u15 = @intCast(i_param + 1);
-    apd.setField(coln, .concise_type, param.c_type) catch |err| return utils.odbcErrToPy(apd, "SetDescField", err, thread_state);
-    ipd.setField(coln, .concise_type, param.sql_type) catch |err| return utils.odbcErrToPy(ipd, "SetDescField", err, thread_state);
-
-    switch (param.misc) {
-        .dt => |info| {
-            if (param.c_type == .char) {
-                apd.setField(coln, .length, info.strlen) catch |err| return utils.odbcErrToPy(apd, "SetDescField", err, thread_state);
-                apd.setField(coln, .octet_length, info.strlen) catch |err| return utils.odbcErrToPy(apd, "SetDescField", err, thread_state);
-                apd.setField(coln, .octet_length_ptr, param.ind.ptr) catch |err| return utils.odbcErrToPy(apd, "SetDescField", err, thread_state);
-            } else {
-                apd.setField(coln, .precision, info.prec) catch |err| return utils.odbcErrToPy(apd, "SetDescField", err, thread_state);
-                apd.setField(coln, .scale, info.prec) catch |err| return utils.odbcErrToPy(apd, "SetDescField", err, thread_state);
-            }
-            ipd.setField(coln, .datetime_interval_precision, info.strlen) catch |err| return utils.odbcErrToPy(ipd, "SetDescField", err, thread_state);
-            ipd.setField(coln, .precision, info.prec) catch |err| return utils.odbcErrToPy(ipd, "SetDescField", err, thread_state);
-            ipd.setField(coln, .scale, info.prec) catch |err| return utils.odbcErrToPy(ipd, "SetDescField", err, thread_state);
-        },
-        .bytes_fixed => |bytes_fixed_len| {
-            apd.setField(coln, .length, bytes_fixed_len) catch |err| return utils.odbcErrToPy(apd, "SetDescField", err, thread_state);
-            apd.setField(coln, .octet_length, bytes_fixed_len) catch |err| return utils.odbcErrToPy(apd, "SetDescField", err, thread_state);
-            apd.setField(coln, .octet_length_ptr, param.ind.ptr) catch |err| return utils.odbcErrToPy(apd, "SetDescField", err, thread_state);
-            ipd.setField(coln, .length, bytes_fixed_len) catch |err| return utils.odbcErrToPy(ipd, "SetDescField", err, thread_state);
-        },
-        .dec => |info| {
-            ipd.setField(coln, .precision, info.precision) catch |err| return utils.odbcErrToPy(ipd, "SetDescField", err, thread_state);
-            ipd.setField(coln, .scale, info.scale) catch |err| return utils.odbcErrToPy(ipd, "SetDescField", err, thread_state);
-            apd.setField(coln, .precision, info.precision) catch |err| return utils.odbcErrToPy(apd, "SetDescField", err, thread_state);
-            apd.setField(coln, .scale, info.scale) catch |err| return utils.odbcErrToPy(apd, "SetDescField", err, thread_state);
-        },
-        .varsize => {
-            ipd.setField(coln, .length, 0) catch |err| return utils.odbcErrToPy(ipd, "SetDescField", err, thread_state);
-            apd.setField(coln, .octet_length, 0) catch |err| return utils.odbcErrToPy(apd, "SetDescField", err, thread_state);
-            apd.setField(coln, .octet_length_ptr, param.ind.ptr) catch |err| return utils.odbcErrToPy(apd, "SetDescField", err, thread_state);
-        },
-        .arrow_tvp => unreachable, // TODO
-        .noinfo => {},
-    }
-
-    apd.setField(coln, .indicator_ptr, param.ind.ptr) catch |err| return utils.odbcErrToPy(apd, "SetDescField", err, thread_state);
-    if (param.data) |d| {
-        apd.setField(coln, .data_ptr, d.ptr) catch |err| return utils.odbcErrToPy(apd, "SetDescField", err, thread_state);
-    }
-    ipd.setField(coln, .parameter_type, .input) catch |err| return utils.odbcErrToPy(ipd, "SetDescField", err, thread_state);
-}
-
-pub fn bindBatch(
+pub fn batchToParams(
     stmt: zodbc.Statement,
-    ipd: zodbc.Descriptor.ImpParamDesc,
-    apd: zodbc.Descriptor.AppParamDesc,
     query: []const u8,
     prepared: *bool,
     batch_schema: *arrow.ArrowSchema,
@@ -425,7 +371,6 @@ pub fn bindBatch(
             error.OutOfMemory => return error.OutOfMemory,
         };
         param_list.appendAssumeCapacity(param);
-        try bind(i_param, param, apd, ipd, thread_state);
     }
 
     return param_list;
@@ -448,10 +393,8 @@ pub fn executeMany(
 
     apd.setField(0, .count, @intCast(n_params)) catch |err| return utils.odbcErrToPy(apd, "SetDescField", err, thread_state);
 
-    var param_list = try bindBatch(
+    var param_list = try batchToParams(
         stmt,
-        ipd,
-        apd,
         query,
         &prepared,
         batch_schema,
@@ -460,6 +403,14 @@ pub fn executeMany(
         thread_state,
     );
     defer deinitParams(&param_list, ally);
+
+    try bindList(
+        stmt,
+        ipd,
+        apd,
+        param_list,
+        thread_state,
+    );
 
     apd.setField(0, .array_size, @intCast(batch_array.length)) catch |err| return utils.odbcErrToPy(apd, "SetDescField", err, thread_state);
     var rows_processed: u64 = 0;

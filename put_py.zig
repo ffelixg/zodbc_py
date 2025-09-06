@@ -13,6 +13,7 @@ const Param = @import("put_common.zig").Param;
 const ParamList = @import("put_common.zig").ParamList;
 const DAEInfo = @import("put_common.zig").DAEInfo;
 const deinitParams = @import("put_common.zig").deinitParams;
+const bindList = @import("put_common.zig").bindList;
 
 pub const Conv = enum {
     wchar,
@@ -82,6 +83,9 @@ pub fn bindParams(
     prepared: *bool,
     query: []const u8,
 ) !ParamList {
+    var thread_state_inner: ?*c.PyThreadState = null;
+    const thread_state = &thread_state_inner;
+
     const seq_or_dict: enum { seq, dict } = if ( //
         c.PySequence_Check(py_params) == 1 //
         and c.PyBytes_Check(py_params) != 1 //
@@ -98,11 +102,6 @@ pub fn bindParams(
 
     if (n_params == 0)
         return params;
-
-    const apd = try zodbc.Descriptor.AppParamDesc.fromStatement(stmt);
-    const ipd = try zodbc.Descriptor.ImpParamDesc.fromStatement(stmt);
-
-    try apd.setField(0, .count, @intCast(n_params));
 
     const items_iter = if (seq_or_dict == .dict) blk: {
         const py_items = c.PyObject_CallMethod(py_params, "items", "") orelse return error.PyErr;
@@ -138,30 +137,30 @@ pub fn bindParams(
         ind[0] = zodbc.c.SQL_NULL_DATA;
 
         if (is_null) {
-            try utils.ensurePrepared(stmt, prepared, query, null);
+            // try utils.ensurePrepared(stmt, prepared, query, null);
+            // const TP = @typeInfo(@typeInfo(@TypeOf(zodbc.Statement.describeParam)).@"fn".return_type.?).error_union.payload;
+            // const desc = stmt.describeParam(@intCast(i_param + 1)) catch TP{
+            //     .length = 0,
+            //     .nullable = .nullable,
+            //     .scale = 0,
+            //     .sql_type = .binary,
+            // };
+
+            // params.appendAssumeCapacity(.{
+            //     .c_type = .default,
+            //     .sql_type = desc.sql_type,
+            //     .ind = ind,
+            //     .data = null,
+            //     .misc = .null,
+            // });
 
             params.appendAssumeCapacity(.{
-                .c_type = undefined,
-                .sql_type = undefined,
+                .c_type = .wchar,
+                .sql_type = .wvarchar,
                 .ind = ind,
                 .data = null,
+                .misc = .varsize,
             });
-
-            const TP = @typeInfo(@typeInfo(@TypeOf(zodbc.Statement.describeParam)).@"fn".return_type.?).error_union.payload;
-            const desc = stmt.describeParam(@intCast(i_param + 1)) catch TP{
-                .length = 0,
-                .nullable = .nullable,
-                .scale = 0,
-                .sql_type = .binary,
-            };
-            ipd.setField(
-                @intCast(i_param + 1),
-                .concise_type,
-                desc.sql_type,
-            ) catch |err| return utils.odbcErrToPy(ipd, "SetDescField", err, null);
-
-            try ipd.setField(@intCast(i_param + 1), .parameter_type, .input);
-            try apd.setField(@intCast(i_param + 1), .indicator_ptr, params.items[i_param].ind.ptr);
 
             continue;
         }
@@ -409,7 +408,15 @@ pub fn bindParams(
                         .batch_array = batch_array,
                         .schema_name = schema_name,
                         .table_name = table_name,
-                        .param_list = null,
+                        .param_list = try put_arrow.batchToParams(
+                            stmt,
+                            query,
+                            prepared,
+                            batch_schema,
+                            batch_array,
+                            allocator,
+                            thread_state,
+                        ),
                     } },
                 };
             },
@@ -420,81 +427,25 @@ pub fn bindParams(
             param.ind[0] = @intCast(buf.len);
         }
 
-        // Diff with put_arrow: ind slice vs scalar, no bytes_fixed, data slice vs ptr
-        const coln: u15 = @intCast(i_param + 1);
-        var thread_state_inner: ?*c.PyThreadState = null;
-        const thread_state = &thread_state_inner;
-
         if (py_param_name) |pn| {
             var len: isize = 0;
             const name = c.PyUnicode_AsUTF8AndSize(pn, &len) orelse return error.PyErr;
             if (len < 0)
                 return error.PyErr;
-            try ipd.setFieldString(@intCast(i_param + 1), .name, name[0..@intCast(len)]);
-        }
-
-        const ipd_length: u15, const decimal_digits, const apd_length = switch (param.misc) {
-            .dt => |info| .{
-                info.strlen,
-                info.prec,
-                if (param.c_type == .char) info.strlen else info.prec,
-            },
-            .dec => |info| .{
-                info.precision,
-                info.scale,
-                0, // set later
-            },
-            .varsize => .{ 0, 0, 0 },
-            .noinfo => .{ 0, 0, 0 },
-            .bytes_fixed => unreachable, // TODO
-            .arrow_tvp => |info| .{ @intCast(info.batch_array.n_children), 0, 0 },
-        };
-        stmt.bindParameter(
-            coln,
-            .input,
-            param.c_type,
-            param.sql_type,
-            ipd_length,
-            decimal_digits,
-            if (param.data) |d| d.ptr else null,
-            apd_length,
-            param.ind.ptr,
-        ) catch |err| return utils.odbcErrToPy(stmt, "BindParameter", err, thread_state);
-
-        switch (param.misc) {
-            .dec => |info| {
-                // setting concise type resets some apd related values I think
-                apd.setField(coln, .concise_type, param.c_type) catch |err| return utils.odbcErrToPy(apd, "SetDescField", err, thread_state);
-                apd.setField(coln, .precision, info.precision) catch |err| return utils.odbcErrToPy(apd, "SetDescField", err, thread_state);
-                apd.setField(coln, .scale, info.scale) catch |err| return utils.odbcErrToPy(apd, "SetDescField", err, thread_state);
-                apd.setField(coln, .data_ptr, param.data.?.ptr) catch |err| return utils.odbcErrToPy(apd, "SetDescField", err, thread_state);
-            },
-            .arrow_tvp => |*info| {
-                ipd.setFieldString(@intCast(coln), .ss_type_name, info.table_name) catch |err| return utils.odbcErrToPy(ipd, "SetDescField", err, thread_state);
-                if (info.schema_name) |s| {
-                    ipd.setFieldString(@intCast(coln), .ss_schema_name, s) catch |err| return utils.odbcErrToPy(ipd, "SetDescField", err, thread_state);
-                }
-
-                stmt.setStmtAttr(.ss_param_focus, coln) catch |err| return utils.odbcErrToPy(stmt, "SetStmtAttr", err, thread_state);
-                errdefer stmt.setStmtAttr(.ss_param_focus, 0) catch {};
-
-                const param_list = try put_arrow.bindBatch(
-                    stmt,
-                    ipd,
-                    apd,
-                    query,
-                    prepared,
-                    info.batch_schema,
-                    info.batch_array,
-                    allocator,
-                    thread_state,
-                );
-                info.param_list = param_list;
-
-                stmt.setStmtAttr(.ss_param_focus, 0) catch |err| return utils.odbcErrToPy(stmt, "SetStmtAttr", err, thread_state);
-            },
-            else => {},
+            param.name = try allocator.dupe(u8, name[0..@intCast(len)]);
         }
     }
+
+    const apd = try zodbc.Descriptor.AppParamDesc.fromStatement(stmt);
+    const ipd = try zodbc.Descriptor.ImpParamDesc.fromStatement(stmt);
+
+    try bindList(
+        stmt,
+        ipd,
+        apd,
+        params,
+        thread_state,
+    );
+
     return params;
 }
