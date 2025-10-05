@@ -60,16 +60,14 @@ pub const ArrowArray = extern struct {
 
 pub const SchemaCapsule = py.PyCapsule(ArrowSchema, "arrow_schema", &struct {
     fn deinit(self: *ArrowSchema) callconv(.c) void {
-        _ = self;
-        // if (self.release) |release|
-        //     release(self);
+        if (self.release) |release|
+            release(self);
     }
 }.deinit);
 
 pub const ArrayCapsule = py.PyCapsule(ArrowArray, "arrow_array", &struct {
     fn deinit(self: *ArrowArray) callconv(.c) void {
-        _ = self;
-        // if (self.release) |release|
-        //     release(self);
+        if (self.release) |release|
+            release(self);
     }
 }.deinit);

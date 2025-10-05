@@ -57,11 +57,11 @@ pub fn odbcErrToPy(has_handle: anytype, comptime name: []const u8, err: anytype,
                 if (comptime (std.mem.eql(u8, suffix, "Error") or std.mem.eql(u8, suffix, "SuccessWithInfo"))) {
                     const recs = zodbc.getDiagRecs(
                         has_handle,
-                        std.heap.smp_allocator,
+                        std.heap.c_allocator,
                     ) catch {
                         return py.raise(.Exception, "Failed to get odbc diagnostics for {s}", .{name});
                     };
-                    defer recs.deinit(std.heap.smp_allocator);
+                    defer recs.deinit(std.heap.c_allocator);
                     if (recs.items.len == 0) {
                         return py.raise(.Exception, "Driver indicated {s} for {s} but did not provide diagnostic information", .{ suffix, name });
                     }

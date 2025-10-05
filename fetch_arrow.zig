@@ -173,7 +173,7 @@ const Array = struct {
     }
 
     fn init(n_rows: usize, tag: Conversions, allocator: std.mem.Allocator) !@This() {
-        const valid_mem = try allocator.alloc(std.DynamicBitSetUnmanaged.MaskInt, bitSetLen(n_rows));
+        const valid_mem = try allocator.alignedAlloc(std.DynamicBitSetUnmanaged.MaskInt, @alignOf(usize), bitSetLen(n_rows));
         errdefer allocator.free(valid_mem);
         @memset(valid_mem, 0);
 
@@ -183,10 +183,10 @@ const Array = struct {
                 const T = comp_tag.ArrowType();
                 if (comptime comp_tag.isVarArrow()) {
                     comptime std.debug.assert(T == u32);
-                    const value = try allocator.alloc(T, n_rows + 1);
+                    const value = try allocator.alignedAlloc(T, @alignOf(usize), n_rows + 1);
                     errdefer allocator.free(value);
                     value[0] = 0;
-                    const data = try allocator.alloc(u8, n_rows * 42);
+                    const data = try allocator.alignedAlloc(u8, @alignOf(usize), n_rows * 42);
                     errdefer allocator.free(data);
                     return .{
                         .data = data,
@@ -198,7 +198,7 @@ const Array = struct {
                 }
                 if (comp_tag == .bit) {
                     comptime std.debug.assert(T == std.DynamicBitSetUnmanaged.MaskInt);
-                    const bitset_mem = try allocator.alloc(T, bitSetLen(n_rows));
+                    const bitset_mem = try allocator.alignedAlloc(T, @alignOf(usize), bitSetLen(n_rows));
                     errdefer allocator.free(bitset_mem);
                     @memset(bitset_mem, 0);
                     return .{
@@ -209,7 +209,7 @@ const Array = struct {
                         .n_rows_max = n_rows,
                     };
                 }
-                const value = try allocator.alloc(T, n_rows);
+                const value = try allocator.alignedAlloc(T, @alignOf(usize), n_rows);
                 errdefer allocator.free(value);
                 return .{
                     .data = null,

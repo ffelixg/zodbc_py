@@ -155,7 +155,7 @@ pub fn bindParams(
             // });
 
             params.appendAssumeCapacity(.{
-                .c_type = .wchar,
+                .c_type = .default,
                 .sql_type = .wvarchar,
                 .ind = ind,
                 .data = null,

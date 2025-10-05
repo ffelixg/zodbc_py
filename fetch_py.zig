@@ -215,10 +215,10 @@ inline fn odbcToPy(
     switch (conv) {
         .wchar => {
             const str = try std.unicode.wtf16LeToWtf8Alloc(
-                std.heap.smp_allocator,
+                std.heap.c_allocator,
                 @as([]u16, @alignCast(@ptrCast(bytes))),
             );
-            defer std.heap.smp_allocator.free(str);
+            defer std.heap.c_allocator.free(str);
             return c.PyUnicode_FromStringAndSize(str.ptr, @intCast(str.len)) orelse return py.PyErr;
         },
         .binary => {
@@ -277,8 +277,8 @@ inline fn odbcToPy(
             return try pyCall(py_funcs.cls_uuid, .{ null, null, pybytes });
         },
         .numeric => {
-            _, const dec_str = try fmt.decToString(val);
-            return try pyCall(py_funcs.cls_decimal, .{dec_str});
+            const dec_buf, const dec_start, const dec_end = try fmt.decToString(val);
+            return try pyCall(py_funcs.cls_decimal, .{dec_buf[dec_start..dec_end]});
         },
         .bit => {
             return try py.zig_to_py(switch (val) {

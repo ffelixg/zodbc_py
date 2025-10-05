@@ -16,12 +16,19 @@ const Obj = *c.PyObject;
 
 const PyErr = py.PyErr;
 
+const DebugAllocator = std.heap.DebugAllocator(.{
+    .never_unmap = true,
+    .retain_metadata = true,
+    .safety = true,
+    .thread_safe = true,
+});
+
 const EnvCon = struct {
     env: zodbc.Environment,
     con: zodbc.Connection,
     py_funcs: PyFuncs,
     closed: bool = false,
-    dbg_allocator: if (builtin.mode == .Debug) *std.heap.DebugAllocator(.{}) else void,
+    dbg_allocator: if (builtin.mode == .Debug) *DebugAllocator else void,
     ally: std.mem.Allocator,
 
     fn close(self: *EnvCon) !void {
@@ -205,10 +212,11 @@ pub fn connect(constr: []const u8, autocommit: bool) !Obj {
     errdefer py_funcs.deinit();
 
     const dbg, const ally = if (builtin.mode == .Debug) blk: {
-        const dbg = std.heap.c_allocator.create(std.heap.DebugAllocator(.{})) catch unreachable;
+        const dbg = std.heap.c_allocator.create(DebugAllocator) catch unreachable;
         dbg.* = .init;
+        dbg.backing_allocator = std.heap.c_allocator;
         break :blk .{ dbg, dbg.allocator() };
-    } else .{ void{}, std.heap.smp_allocator };
+    } else .{ void{}, std.heap.c_allocator };
 
     return try ConnectionCapsule.create_capsule(EnvCon{
         .env = env,

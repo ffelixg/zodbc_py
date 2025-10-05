@@ -201,15 +201,18 @@ inline fn fromString(
         },
         prepSwitch("n") => {
             @memset(ind, zodbc.c.SQL_NULL_DATA);
-            try utils.ensurePrepared(stmt, prepared, query, thread_state);
-            const desc = stmt.describeParam(@intCast(i_param + 1)) catch |err|
-                return utils.odbcErrToPy(stmt, "DescribeParam", err, thread_state);
+            _ = stmt;
+            _ = query;
+            _ = prepared;
+            // try utils.ensurePrepared(stmt, prepared, query, thread_state);
+            // const desc = stmt.describeParam(@intCast(i_param + 1)) catch |err|
+            //     return utils.odbcErrToPy(stmt, "DescribeParam", err, thread_state);
             return Param{
                 .c_type = .default,
-                .sql_type = desc.sql_type,
+                .sql_type = .wvarchar,
                 .ind = ind,
                 .data = null,
-                .misc = .null,
+                .misc = .varsize,
             };
         },
         inline prepSwitch("ttu"),
