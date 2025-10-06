@@ -1,7 +1,7 @@
 const std = @import("std");
 const zodbc = @import("zodbc");
 
-const DEC_BUF_LEN = 2 * (2 + std.math.log10(std.math.maxInt(u128)));
+const DEC_BUF_LEN = 2 * (2 + std.math.log10(@as(u128, std.math.maxInt(u128))));
 pub inline fn decToString(dec: zodbc.c.SQL_NUMERIC_STRUCT) !struct { [DEC_BUF_LEN]u8, usize, usize } {
     const middle: comptime_int = @divExact(DEC_BUF_LEN, 2);
     var buf: [DEC_BUF_LEN]u8 = undefined;

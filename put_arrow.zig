@@ -14,7 +14,7 @@ const bindList = @import("put_common.zig").bindList;
 const CDataType = zodbc.odbc.types.CDataType;
 
 inline fn arrowBufferCast(T: type, array: arrow.ArrowArray, is_var: bool) []T {
-    return @as([*]T, @alignCast(@ptrCast(array.buffers[1].?)))[0..@intCast(array.length + if (is_var) 1 else 0)];
+    return @as([*]T, @ptrCast(@alignCast(array.buffers[1].?)))[0..@intCast(array.length + if (is_var) 1 else 0)];
 }
 
 inline fn prepSwitch(str: []const u8) u32 {
@@ -46,7 +46,7 @@ inline fn fromString(
     if (array.buffers[0]) |valid_buf| {
         const valid: std.DynamicBitSetUnmanaged = .{
             .bit_length = @intCast(array.length),
-            .masks = @alignCast(@ptrCast(valid_buf)),
+            .masks = @ptrCast(@alignCast(valid_buf)),
         };
         for (ind, 0..) |*i, ix| {
             i.* = if (valid.isSet(ix)) 0 else zodbc.c.SQL_NULL_DATA;
@@ -60,7 +60,7 @@ inline fn fromString(
             const buf = try ally.alloc(CDataType.bit.Type(), @intCast(array.length));
             const bits = std.DynamicBitSetUnmanaged{
                 .bit_length = @intCast(array.length),
-                .masks = @alignCast(@ptrCast(array.buffers[1].?)),
+                .masks = @ptrCast(@alignCast(array.buffers[1].?)),
             };
             for (buf, 0..) |*b, ix| {
                 b.* = if (bits.isSet(ix)) 1 else 0;

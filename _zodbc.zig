@@ -91,7 +91,7 @@ const Stmt = struct {
                 names.deinit(self.stmt.env_con.ally);
             }
             if (self.cache_tuple_type) |tp| {
-                c.Py_DECREF(@alignCast(@ptrCast(tp)));
+                c.Py_DECREF(@ptrCast(@alignCast(tp)));
             }
             if (self.cache_fetch_py_state) |fp| {
                 fp.deinit(self.stmt.env_con.ally);

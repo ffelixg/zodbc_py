@@ -216,7 +216,7 @@ inline fn odbcToPy(
         .wchar => {
             const str = try std.unicode.wtf16LeToWtf8Alloc(
                 std.heap.c_allocator,
-                @as([]u16, @alignCast(@ptrCast(bytes))),
+                @as([]u16, @ptrCast(@alignCast(bytes))),
             );
             defer std.heap.c_allocator.free(str);
             return c.PyUnicode_FromStringAndSize(str.ptr, @intCast(str.len)) orelse return py.PyErr;
