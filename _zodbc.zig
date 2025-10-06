@@ -72,13 +72,51 @@ const Stmt = struct {
         cache_fetch_arrow_state: ?FetchArrow = null,
 
         fn init(stmt: *const Stmt, allocator: std.mem.Allocator) !@This() {
-            const thread_state = c.PyEval_SaveThread();
-            defer c.PyEval_RestoreThread(thread_state);
+            var thread_state = c.PyEval_SaveThread();
+            defer if (thread_state) |t_state| c.PyEval_RestoreThread(t_state);
+            const desc = try zodbc.Descriptor.AppRowDesc.fromStatement(stmt.stmt);
+            const result_set = zodbc.ResultSet.init(
+                stmt.stmt,
+                desc,
+                allocator,
+            ) catch |err| switch (err) {
+                error.NumResultColsError,
+                error.NumResultColsSuccessWithInfo,
+                error.NumResultColsInvalidHandle,
+                => |err_i| return utils.odbcErrToPy(stmt.stmt, "NumResultCols", err_i, &thread_state),
+
+                error.ColAttributeError,
+                error.ColAttributeSuccessWithInfo,
+                error.ColAttributeInvalidHandle,
+                error.ColAttributeNoData,
+                => |err_i| return utils.odbcErrToPy(stmt.stmt, "ColAttribute", err_i, &thread_state),
+
+                error.BindColError,
+                error.BindColSuccessWithInfo,
+                error.BindColInvalidHandle,
+                => |err_i| return utils.odbcErrToPy(stmt.stmt, "BindCol", err_i, &thread_state),
+
+                error.SetStmtAttrError,
+                error.SetStmtAttrSuccessWithInfo,
+                error.SetStmtAttrInvalidHandle,
+                => |err_i| return utils.odbcErrToPy(stmt.stmt, "SetStmtAttr", err_i, &thread_state),
+
+                error.SetDescFieldError,
+                error.SetDescFieldSuccessWithInfo,
+                error.SetDescFieldInvalidHandle,
+                error.OutOfMemory,
+                => |err_i| return utils.odbcErrToPy(desc, "SetDescField", err_i, &thread_state),
+
+                error.NoResultSet => return error.@"No Results",
+                inline else => |err_i| {
+                    if (comptime std.mem.startsWith(u8, @errorName(err_i), "Unsupported SQL Type: ")) {
+                        return err;
+                    }
+                    @compileError("Need to implement error handling for " ++ @errorName(err_i));
+                },
+            };
             return .{
-                .result_set = try .init(
-                    stmt.stmt,
-                    allocator,
-                ),
+                .result_set = result_set,
                 .stmt = stmt,
             };
         }
