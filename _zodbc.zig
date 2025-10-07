@@ -107,7 +107,7 @@ const Stmt = struct {
                 error.OutOfMemory,
                 => |err_i| return utils.odbcErrToPy(desc, "SetDescField", err_i, &thread_state),
 
-                error.NoResultSet => return error.@"No Results",
+                error.NoResultSet => return error.@"No results",
                 inline else => |err_i| {
                     if (comptime std.mem.startsWith(u8, @errorName(err_i), "Unsupported SQL Type: ")) {
                         return err;

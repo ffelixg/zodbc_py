@@ -57,7 +57,17 @@ pub const Conv = enum {
             return .numeric_string;
         } else if (1 == c.PyObject_IsInstance(val, funcs.cls_uuid)) {
             return .guid;
-        } else if (1 == c.PyObject_IsInstance(val, funcs.cls_atvp)) {
+        } else if (blk: {
+            // if (1 == c.PyObject_IsInstance(val, funcs.cls_arrow_table)) {
+            const val_type = c.PyObject_Type(val) orelse return error.PyErr;
+            defer c.Py_DECREF(val_type);
+            const type_name = c.PyObject_GetAttrString(val_type, "__name__") orelse return error.PyErr;
+            defer c.Py_DECREF(type_name);
+            var sz: isize = 0;
+            const name = c.PyUnicode_AsUTF8AndSize(type_name, &sz) orelse return error.PyErr;
+            if (sz < 0) return error.PyErr;
+            break :blk std.mem.eql(u8, name[0..@intCast(sz)], "ArrowTVP");
+        }) {
             return .arrow_table;
         } else {
             return error.CouldNotFindConversion;
