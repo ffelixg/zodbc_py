@@ -108,7 +108,7 @@ const Conversions = enum {
 };
 
 const Schema = struct {
-    name: []const u8,
+    name: [:0]const u8,
     format: []const u8,
 
     /// Clones contents of Schema

@@ -154,7 +154,7 @@ const Stmt = struct {
             errdefer for (names.items) |name| self.stmt.env_con.ally.free(name);
 
             for (0..n_cols) |i_col| {
-                const col_name = try self.result_set.stmt.colAttributeStringZ(
+                const col_name = try self.result_set.stmt.colAttributeString(
                     @intCast(i_col + 1),
                     .name,
                     self.stmt.env_con.ally,
@@ -424,7 +424,8 @@ pub fn getinfo(con: Obj, info_name: []const u8) !Obj {
             tag,
         ) catch |err| return utils.odbcErrToPy(env_con.con, "GetInfo", err, null);
         defer env_con.ally.free(info);
-        return c.PyUnicode_FromStringAndSize(info.ptr, @intCast(info.len)) orelse return PyErr;
+        // ld.so assertion trips in debug mode without inlining, maybe zig bug? TODO try again in 0.16
+        return @call(.always_inline, py.zig_to_py, .{info});
     }
     if (std.meta.stringToEnum(zodbc.odbc.info.InfoType, info_name)) |tag| {
         switch (tag) {
@@ -433,8 +434,7 @@ pub fn getinfo(con: Obj, info_name: []const u8) !Obj {
                     tag_comp,
                 ) catch |err| return utils.odbcErrToPy(env_con.con, "GetInfo", err, null);
                 if (@typeInfo(@TypeOf(info)) == .@"enum") {
-                    const name = @tagName(info);
-                    return c.PyUnicode_FromStringAndSize(name.ptr, @intCast(name.len)) orelse return PyErr;
+                    return py.zig_to_py(@tagName(info));
                 } else {
                     return py.zig_to_py(info);
                 }
@@ -586,4 +586,16 @@ pub fn close_cursor(cur_obj: Obj) !void {
     }
     cur.stmt.closeCursor() catch |err|
         return utils.odbcErrToPy(cur.stmt, "CloseCursor", err, null);
+}
+
+pub fn column_names(cur_obj: Obj) !?[][:0]const u8 {
+    const cur = try StmtCapsule.read_capsule(cur_obj);
+    const RST = @typeInfo(@FieldType(Stmt, "result_set")).optional.child;
+    if (cur.result_set == null) {
+        cur.result_set = RST.init(cur, cur.env_con.ally) catch |err| switch (err) {
+            error.@"No results" => return null,
+            else => return err,
+        };
+    }
+    return try cur.result_set.?.columnNames();
 }

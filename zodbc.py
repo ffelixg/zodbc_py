@@ -193,3 +193,12 @@ class Cursor:
         Return the number of rows affected by the last operation.
         """
         return _zodbc.rowcount(self._cursor)
+    
+    @property
+    def column_names(self) -> None | list[str]:
+        return _zodbc.column_names(self._cursor)
+    
+    @property
+    def description(self):
+        "Only provides the column names, other fields are None."
+        return [(name, None, None, None, None, None, None) for name in _zodbc.column_names(self._cursor)]
