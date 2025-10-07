@@ -337,6 +337,8 @@ pub fn execute(cur_obj: Obj, query: []const u8, py_params: Obj) !void {
         };
     }
 
+    try put_common.checkTooManyParams(cur.stmt, params.items.len, &thread_state);
+
     cur.rowcount = cur.stmt.rowCount() catch |err|
         return utils.odbcErrToPy(cur.stmt, "RowCount", err, &thread_state);
 

@@ -166,3 +166,21 @@ pub fn bindList(
         );
     }
 }
+
+pub fn checkTooManyParams(
+    stmt: zodbc.Statement,
+    n_params: usize,
+    thread_state: ?*?*c.PyThreadState,
+) error{PyErr}!void {
+    // Feels weird to do this after executing, but without preparing, this is how it has to be.
+    const n_params_sql = stmt.numParams() catch |err|
+        return utils.odbcErrToPy(stmt, "NumParams", err, thread_state);
+    if (n_params != n_params_sql) {
+        return utils.raise(
+            .ValueError,
+            "The SQL contains {} parameter markers, but {} parameters were supplied",
+            .{ n_params_sql, n_params },
+            thread_state,
+        );
+    }
+}

@@ -5,6 +5,7 @@ const zeit = @import("zeit");
 const c = @import("c");
 const utils = @import("utils.zig");
 const fmt = @import("fmt.zig");
+const put_common = @import("put_common.zig");
 const Param = @import("put_common.zig").Param;
 const ParamList = @import("put_common.zig").ParamList;
 const DAEInfo = @import("put_common.zig").DAEInfo;
@@ -433,7 +434,12 @@ pub fn executeMany(
             else => return utils.odbcErrToPy(stmt, "ExecDirect", err, thread_state),
         };
     }
-    if (!need_data) return;
+
+    if (!need_data) {
+        try put_common.checkTooManyParams(stmt, n_params, thread_state);
+        return;
+    }
+
     var u16_buf = try ally.alloc(u16, 4000);
     defer ally.free(u16_buf);
     while (stmt.paramData(DAEInfo) catch |err| {
@@ -482,4 +488,6 @@ pub fn executeMany(
             else => unreachable,
         }
     }
+
+    try put_common.checkTooManyParams(stmt, n_params, thread_state);
 }
