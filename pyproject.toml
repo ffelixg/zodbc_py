@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools", "import_zig==0.15.1"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "zodbc"
+authors = [{name = "Felix Graßl"}]
+description = "DBAPI2-like ODBC client with Apache Arrow support"
+readme = "README.md"
+requires-python = ">=3.10"
+keywords = ["odbc", "arrow", "mssql", "sql server"]
+license = "MIT"
+classifiers = [
+    "Programming Language :: Python",
+    "Topic :: Database",
+    "Intended Audience :: Developers",
+]
+dependencies = []
+version = "0.9.1"
+
+[project.optional-dependencies]
+pyarrow = ["pyarrow"]
+
+[project.urls]
+Homepage = "https://github.com/ffelixg/zodbc_py"
+
+[tool.setuptools]
+py-modules = ["zodbc"]
