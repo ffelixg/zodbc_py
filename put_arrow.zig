@@ -32,6 +32,7 @@ inline fn fromString(
     prepared: *bool,
     thread_state: ?*?*c.PyThreadState,
     i_param: usize,
+    i_col: usize,
     ally: std.mem.Allocator,
 ) !Param {
     if (format_string.len == 0)
@@ -140,16 +141,15 @@ inline fn fromString(
             }
             const buf = try ally.create(DAEInfo);
             buf.* = .{
-                .i_param = 0,
-                .i_col = i_param,
+                .i_param = i_param,
+                .i_col = i_col,
                 .i_row = 0,
             };
             return Param{
                 .c_type = c_type,
                 .sql_type = sql_type,
                 .ind = ind,
-                // TODO can be done nicer in 0.15
-                .data = @ptrCast(@as([*]DAEInfo, @ptrCast(buf))[0..1]),
+                .data = @ptrCast(buf),
                 .ownership = ownership,
                 .misc = .{ .varsize = {} },
             };
@@ -349,25 +349,27 @@ pub fn batchToParams(
     stmt: zodbc.Statement,
     query: []const u8,
     prepared: *bool,
+    i_param: usize,
     batch_schema: *arrow.ArrowSchema,
     batch_array: *arrow.ArrowArray,
     ally: std.mem.Allocator,
     thread_state: *?*c.PyThreadState,
 ) !ParamList {
-    const n_params: usize = @intCast(batch_array.n_children);
-    var param_list: ParamList = try .initCapacity(ally, n_params);
+    const n_cols: usize = @intCast(batch_array.n_children);
+    var param_list: ParamList = try .initCapacity(ally, n_cols);
     errdefer deinitParams(&param_list, ally);
 
-    for (0..n_params) |i_param| {
-        const fmt_str = std.mem.span(batch_schema.children.?[i_param].*.format);
+    for (0..n_cols) |i_col| {
+        const fmt_str = std.mem.span(batch_schema.children.?[i_col].*.format);
         const param = fromString(
             fmt_str,
-            batch_array.children.?[i_param].*,
+            batch_array.children.?[i_col].*,
             stmt,
             query,
             prepared,
             thread_state,
             i_param,
+            i_col,
             ally,
         ) catch |err| switch (err) {
             error.UnrecognizedArrowFormat => return utils.raise(.ValueError, "Unrecognized Arrow format string: {s}", .{fmt_str}, thread_state),
@@ -401,6 +403,7 @@ pub fn executeMany(
         stmt,
         query,
         &prepared,
+        0,
         batch_schema,
         batch_array,
         ally,
@@ -417,8 +420,6 @@ pub fn executeMany(
     );
 
     apd.setField(0, .array_size, @intCast(batch_array.length)) catch |err| return utils.odbcErrToPy(apd, "SetDescField", err, thread_state);
-    var rows_processed: u64 = 0;
-    ipd.setField(0, .rows_processed_ptr, &rows_processed) catch |err| return utils.odbcErrToPy(ipd, "SetDescField", err, thread_state);
 
     var need_data: bool = false;
     if (prepared) {
@@ -435,23 +436,49 @@ pub fn executeMany(
         };
     }
 
-    if (!need_data) {
-        try put_common.checkTooManyParams(stmt, n_params, thread_state);
-        return;
+    if (need_data) {
+        try feedParams(
+            stmt,
+            true,
+            batch_array,
+            param_list,
+            ally,
+            thread_state,
+        );
     }
 
+    try put_common.checkTooManyParams(stmt, n_params, thread_state);
+}
+
+pub fn feedParams(
+    stmt: zodbc.Statement,
+    comptime is_executemany: bool,
+    batch_array_executemany: if (is_executemany) *const arrow.ArrowArray else void,
+    param_list: ParamList,
+    ally: std.mem.Allocator,
+    thread_state: *?*c.PyThreadState,
+) !void {
     var u16_buf = try ally.alloc(u16, 4000);
     defer ally.free(u16_buf);
     while (stmt.paramData(DAEInfo) catch |err| {
         return utils.odbcErrToPy(stmt, "ParamData", err, thread_state);
     }) |dae_info| {
         defer dae_info.i_row += 1;
-        const param = param_list.items[dae_info.i_col];
+        const param, const batch_array = if (is_executemany) .{
+            param_list.items[dae_info.i_col],
+            batch_array_executemany,
+        } else blk: {
+            const tvp_info = param_list.items[dae_info.i_param].misc.arrow_tvp;
+            const arrow_batch = tvp_info.batch_array;
+            break :blk .{
+                tvp_info.param_list.items[dae_info.i_col],
+                arrow_batch,
+            };
+        };
         while (param.ind[dae_info.i_row] != zodbc.c.SQL_DATA_AT_EXEC) {
             dae_info.i_row += 1;
             std.debug.assert(dae_info.i_row < batch_array.length);
         }
-        std.debug.assert(rows_processed == dae_info.i_row + 1);
         const array = batch_array.children.?[dae_info.i_col].*;
         const data_buf = array.buffers[2].?;
 
@@ -488,6 +515,4 @@ pub fn executeMany(
             else => unreachable,
         }
     }
-
-    try put_common.checkTooManyParams(stmt, n_params, thread_state);
 }

@@ -323,18 +323,32 @@ pub fn execute(cur_obj: Obj, query: []const u8, py_params: Obj) !void {
 
     var thread_state = c.PyEval_SaveThread();
     defer if (thread_state) |t_state| c.PyEval_RestoreThread(t_state);
+    var need_data: bool = false;
     if (prepared) {
         cur.stmt.execute() catch |err| switch (err) {
             error.ExecuteNoData => {},
+            error.ExecuteNeedData => need_data = true,
             error.ExecuteSuccessWithInfo => {},
             else => return utils.odbcErrToPy(cur.stmt, "Execute", err, &thread_state),
         };
     } else {
         cur.stmt.execDirect(query) catch |err| switch (err) {
             error.ExecDirectNoData => {},
+            error.ExecDirectNeedData => need_data = true,
             error.ExecDirectSuccessWithInfo => {},
             else => return utils.odbcErrToPy(cur.stmt, "ExecDirect", err, &thread_state),
         };
+    }
+
+    if (need_data) {
+        try put_arrow.feedParams(
+            cur.stmt,
+            false,
+            void{},
+            params,
+            cur.env_con.ally,
+            &thread_state,
+        );
     }
 
     try put_common.checkTooManyParams(cur.stmt, params.items.len, &thread_state);

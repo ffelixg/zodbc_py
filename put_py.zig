@@ -422,6 +422,7 @@ pub fn bindParams(
                             stmt,
                             query,
                             prepared,
+                            i_param,
                             batch_schema,
                             batch_array,
                             allocator,

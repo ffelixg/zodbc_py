@@ -6,7 +6,7 @@ const Obj = *c.PyObject;
 const utils = @import("utils.zig");
 
 pub const DAEInfo = struct {
-    /// 0 for executemany, number of column for TVPs
+    /// 0 for executemany, number of column (>0) for TVPs
     i_param: usize,
 
     i_col: usize,
