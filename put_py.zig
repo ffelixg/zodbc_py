@@ -85,7 +85,7 @@ fn createOdbcVal(
     return buf;
 }
 
-pub fn bindParams(
+pub fn toParams(
     stmt: zodbc.Statement,
     py_params: Obj,
     allocator: std.mem.Allocator,
@@ -446,17 +446,6 @@ pub fn bindParams(
             param.name = try allocator.dupe(u8, name[0..@intCast(len)]);
         }
     }
-
-    const apd = try zodbc.Descriptor.AppParamDesc.fromStatement(stmt);
-    const ipd = try zodbc.Descriptor.ImpParamDesc.fromStatement(stmt);
-
-    try bindList(
-        stmt,
-        ipd,
-        apd,
-        params,
-        thread_state,
-    );
 
     return params;
 }

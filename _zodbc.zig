@@ -299,18 +299,15 @@ pub fn cursor(con: Obj, datetime2_7_fetch: utils.Dt7Fetch) !Obj {
 
 pub fn execute(cur_obj: Obj, query: []const u8, py_params: Obj) !void {
     const cur = try StmtCapsule.read_capsule(cur_obj);
+
     if (cur.result_set) |*result_set| {
         try result_set.deinit();
         // try cur.stmt.closeCursor();
         cur.result_set = null;
     }
-    // Fixes issue with multiple execute calls without fetches but can error.
-    // Maybe better to discard individual result sets?
-    cur.stmt.closeCursor() catch {};
 
     var prepared = false;
-
-    var params = try put_py.bindParams(
+    var params = try put_py.toParams(
         cur.stmt,
         py_params,
         cur.env_con.ally,
@@ -319,10 +316,25 @@ pub fn execute(cur_obj: Obj, query: []const u8, py_params: Obj) !void {
         query,
     );
     defer put_common.deinitParams(&params, cur.env_con.ally);
-    errdefer if (params.items.len > 0) cur.stmt.free(.reset_params) catch {};
 
     var thread_state = c.PyEval_SaveThread();
     defer if (thread_state) |t_state| c.PyEval_RestoreThread(t_state);
+
+    // Fixes issue with multiple execute calls without fetches but can error.
+    // Maybe better to discard individual result sets?
+    cur.stmt.closeCursor() catch {};
+
+    const apd = try zodbc.Descriptor.AppParamDesc.fromStatement(cur.stmt);
+    const ipd = try zodbc.Descriptor.ImpParamDesc.fromStatement(cur.stmt);
+    try put_common.bindList(
+        cur.stmt,
+        ipd,
+        apd,
+        params,
+        &thread_state,
+    );
+    errdefer if (params.items.len > 0) cur.stmt.free(.reset_params) catch {};
+
     var need_data: bool = false;
     if (prepared) {
         cur.stmt.execute() catch |err| switch (err) {
