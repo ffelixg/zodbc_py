@@ -15,8 +15,8 @@ class ZigBuilder(build_ext):
             directory={"path": ".", "root_source_file": "_zodbc.zig"},
             imports={
                 'zodbc': {
-                    "url": "https://github.com/ffelixg/zodbc/archive/6438c45981d72231e5ca9219f113efb20dc72569.tar.gz",
-                    "hash": "zodbc-0.0.0-NOqtR-q_AwBisi40Olxb4xP-6cUE68MaWeGPqrC8dyiD",
+                    "url": "https://github.com/ffelixg/zodbc/archive/73a13c03a270c19ed893634e0cc751e8e5fb0147.tar.gz",
+                    "hash": "zodbc-0.0.0-NOqtR-2_AwBDjLeBrzgxuPkc71DVq38-cxscDxxakMmZ",
                 },
                 'zeit': {
                     "url": "https://github.com/rockorager/zeit/archive/74be5a2afb346b2a6a6349abbb609e89ec7e65a6.tar.gz",
