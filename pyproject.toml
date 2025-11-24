@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools", "import_zig==0.15.1"]
+requires = ["setuptools", "import_zig==0.15.2"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -16,7 +16,7 @@ classifiers = [
     "Intended Audience :: Developers",
 ]
 dependencies = []
-version = "0.9.1"
+version = "0.9.2"
 
 [project.optional-dependencies]
 pyarrow = ["pyarrow"]
