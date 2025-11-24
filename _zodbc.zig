@@ -31,16 +31,12 @@ const EnvCon = struct {
     dbg_allocator: if (builtin.mode == .Debug) *DebugAllocator else void,
     ally: std.mem.Allocator,
 
-    fn close(self: *EnvCon) !void {
-        if (self.closed) return;
-        self.closed = true;
-        self.con.endTran(.rollback) catch return self.con.getLastError();
-        self.con.disconnect() catch return self.con.getLastError();
-    }
-
     /// Only called via garbage collection
     fn deinit(self: *EnvCon) callconv(.c) void {
-        self.close() catch {};
+        if (!self.closed) {
+            self.con.endTran(.rollback) catch {};
+            self.con.disconnect() catch {};
+        }
         self.py_funcs.deinit();
         // TODO maybe use python warnings?
         self.con.deinit() catch {};
@@ -243,7 +239,7 @@ pub fn connect(constr: []const u8, autocommit: bool) !Obj {
     // on by default
     if (!autocommit)
         try con.setConnectAttr(.{ .autocommit = .off });
-    try con.connectWithString(constr);
+    con.connectWithString(constr) catch |err| return utils.odbcErrToPy(con, "DriverConnect", err, null);
     errdefer con.disconnect() catch {};
 
     const py_funcs = try PyFuncs.init();
@@ -525,7 +521,12 @@ pub fn nextset(cur_obj: Obj) !bool {
 
 pub fn con_close(con: Obj) !void {
     const env_con = try ConnectionCapsule.read_capsule(con);
-    try env_con.close();
+    if (env_con.closed) return;
+    env_con.closed = true;
+    const err1 = env_con.con.endTran(.rollback);
+    const err2 = env_con.con.disconnect();
+    err1 catch |err| return utils.odbcErrToPy(env_con.con, "EndTran", err, null);
+    err2 catch |err| return utils.odbcErrToPy(env_con.con, "Disconnect", err, null);
 }
 
 pub fn con_closed(con: Obj) !bool {
