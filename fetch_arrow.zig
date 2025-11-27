@@ -110,6 +110,7 @@ const Conversions = enum {
 const Schema = struct {
     name: [:0]const u8,
     format: []const u8,
+    nullable: bool,
 
     /// Clones contents of Schema
     fn produce(self: @This()) !arrow.ArrowSchema {
@@ -138,6 +139,7 @@ const Schema = struct {
         return arrow.ArrowSchema{
             .name = name.ptr,
             .format = format.ptr,
+            .flags = if (self.nullable) 2 else 0,
             .release = struct {
                 fn release(schema: *arrow.ArrowSchema) callconv(.c) void {
                     const private_inner: *Private = @ptrCast(@alignCast(schema.private_data));
@@ -381,7 +383,11 @@ pub fn init(res: *const zodbc.ResultSet, allocator: std.mem.Allocator, dt7_fetch
                 const name = try res.stmt.colAttributeString(@intCast(i_col + 1), .name, allocator);
                 errdefer allocator.free(name);
 
-                cols.appendAssumeCapacity(.{ .name = name, .format = format });
+                cols.appendAssumeCapacity(.{
+                    .name = name,
+                    .format = format,
+                    .nullable = try res.stmt.colAttribute(@intCast(i_col + 1), .nullable) != .no_nulls,
+                });
                 break :blk_outer tag;
             },
         };
